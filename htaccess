@@ -15,3 +15,7 @@ SetEnv GEMINI_API_KEY AQ.Ab8RN6JA4M9xZ-b49uUVt2O3OO7sxSOzY1Qh6IwHhjKYQ06_UA
         Header set Pragma "no-cache"
     </IfModule>
 </FilesMatch>
+
+<Files "config.php">
+    Require all denied
+</Files>

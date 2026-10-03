@@ -1,5 +1,5 @@
 <?php
-$config = require __DIR__ . '/../config.php'; // one level above the web root
+$config = require __DIR__ . '/config.php';
 
 // Never show errors to visitors; log them instead
 ini_set('display_errors', 0);
@@ -19,4 +19,3 @@ try {
     error_log($e->getMessage());
     die("Database connection failed.");
 }
-?>
