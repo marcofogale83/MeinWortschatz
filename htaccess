@@ -1,0 +1,17 @@
+SetEnv GEMINI_API_KEY AQ.Ab8RN6JA4M9xZ-b49uUVt2O3OO7sxSOzY1Qh6IwHhjKYQ06_UA
+
+# Disable all browser and proxy caching for absolute synchronization
+<IfModule mod_headers.c>
+    Header set Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+    Header set Pragma "no-cache"
+    Header set Expires "0"
+</IfModule>
+
+<FilesMatch "\.(php|html|json)$">
+    FileETag None
+    <IfModule mod_headers.c>
+        Header unset ETag
+        Header set Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+        Header set Pragma "no-cache"
+    </IfModule>
+</FilesMatch>
