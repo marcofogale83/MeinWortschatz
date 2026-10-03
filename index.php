@@ -16,6 +16,7 @@ session_start();
 
 require_once 'db.php';
 
+// -- TEST CONNECTION SUCCESSFUL --
 // --- CONFIGURATION: Gemini API Key ---
 $envKey = getenv('GEMINI_API_KEY');
 if (empty($envKey) && isset($_SERVER['GEMINI_API_KEY'])) {
