@@ -12,20 +12,135 @@ if (function_exists('opcache_reset')) {
     @opcache_reset();
 }
 
+// --- SECURE SESSION COOKIE (use the same call in login.php BEFORE its session_start) ---
+session_set_cookie_params([
+    'lifetime' => 0,
+    'path'     => '/',
+    'secure'   => !empty($_SERVER['HTTPS']),
+    'httponly' => true,
+    'samesite' => 'Lax',
+]);
 session_start();
 
+// db.php loads config.php and creates $pdo and $config
 require_once 'db.php';
 
-// -- TEST CONNECTION SUCCESSFUL --
-// --- CONFIGURATION: Gemini API Key ---
-$envKey = getenv('GEMINI_API_KEY');
-if (empty($envKey) && isset($_SERVER['GEMINI_API_KEY'])) {
-    $envKey = $_SERVER['GEMINI_API_KEY'];
-}
-define('GEMINI_API_KEY', $envKey ?: 'AQ.Ab8RN6JA4M9xZ-b49uUVt2O3OO7sxSOzY1Qh6IwHhjKYQ06_UA');
+// --- CONFIGURATION: API keys come from config.php (never hardcode them here) ---
+define('GEMINI_API_KEY', $config['gemini_api_key'] ?? '');
+define('RAPIDAPI_KEY', $config['rapidapi_key'] ?? '');
 
 if (isset($pdo) && method_exists($pdo, 'setAttribute')) {
     $pdo->setAttribute(PDO::ATTR_EMULATE_PREPARES, false);
+}
+
+// --- HELPERS ---
+const WORD_COLS = "sharepoint_list, Thema, Wortarten, Wort, Artikel, Plural, Score, Status, Created, Modified, NachsteUbungDatum, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Übersetzung, synonym, Beispiel";
+
+function jsonInput(): array {
+    $data = json_decode(file_get_contents('php://input'), true);
+    return is_array($data) ? $data : [];
+}
+
+function likeEscape(string $s): string {
+    return addcslashes($s, '%_\\');
+}
+
+function normalizeVerbFlag(array &$w): void {
+    $w['VerbFlag'] = (isset($w['VerbFlag']) && (int)$w['VerbFlag'] === 1) ? 1 : 0;
+}
+
+// Safe JSON for inline <script> blocks
+function jsonForScript($value): string {
+    return json_encode($value, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE);
+}
+
+// Safe JS string argument for inline onclick="" attributes
+function jsArg($value): string {
+    return htmlspecialchars(
+        json_encode((string)$value, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE),
+        ENT_QUOTES,
+        'UTF-8'
+    );
+}
+
+// One single DeepSeek call for all AI features
+function callDeepSeek(string $prompt): array {
+    $curl = curl_init();
+    curl_setopt_array($curl, [
+        CURLOPT_URL => "https://deepseek-v31.p.rapidapi.com/",
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_ENCODING => "",
+        CURLOPT_MAXREDIRS => 10,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+        CURLOPT_CUSTOMREQUEST => "POST",
+        CURLOPT_POSTFIELDS => json_encode([
+            'model' => 'DeepSeek-V3.2',
+            'messages' => [
+                ['role' => 'user', 'content' => $prompt]
+            ]
+        ]),
+        CURLOPT_HTTPHEADER => [
+            "Content-Type: application/json",
+            "x-rapidapi-host: deepseek-v31.p.rapidapi.com",
+            "x-rapidapi-key: " . RAPIDAPI_KEY
+        ],
+    ]);
+    $response = curl_exec($curl);
+    $err = curl_error($curl);
+    curl_close($curl);
+
+    if ($err) {
+        return ['ok' => false, 'error' => "cURL Fehler #: " . $err, 'content' => ''];
+    }
+
+    $data = json_decode((string)$response, true);
+    $content = '';
+    if (isset($data['choices'][0]['message']['content'])) {
+        $content = $data['choices'][0]['message']['content'];
+    } elseif (isset($data['choices'][0]['text'])) {
+        $content = $data['choices'][0]['text'];
+    } elseif (isset($data['content'])) {
+        $content = $data['content'];
+    } else {
+        $content = (string)$response;
+    }
+
+    return ['ok' => true, 'error' => '', 'content' => trim($content)];
+}
+
+// Extract a JSON object from an AI answer (with or without ``` fences)
+function parseAiJson(string $content): ?array {
+    $cleaned = trim($content);
+    if (preg_match('/```json\s*(.*?)\s*```/s', $cleaned, $m)) {
+        $cleaned = $m[1];
+    } elseif (preg_match('/```\s*(.*?)\s*```/s', $cleaned, $m)) {
+        $cleaned = $m[1];
+    }
+    $parsed = json_decode($cleaned, true);
+    return is_array($parsed) ? $parsed : null;
+}
+
+// Build the "status / lists / themen / categories" filter used by several games
+function buildGameFilter(array $input, bool $requireThema = false): array {
+    $selectedStatuses = $input['statuses'] ?? [];
+    $selectedLists = $input['sharepoint_lists'] ?? [];
+    $selectedThemen = $input['themen'] ?? [];
+    $categories = $input['categories'] ?? [];
+
+    $where = "";
+    $params = [];
+
+    if ($requireThema && !empty($selectedThemen)) {
+        $where .= " AND Thema IS NOT NULL AND Thema != ''";
+    }
+    foreach ([['Status', $selectedStatuses], ['sharepoint_list', $selectedLists], ['Thema', $selectedThemen], ['Wortarten', $categories]] as [$col, $values]) {
+        if (!empty($values) && is_array($values)) {
+            $where .= " AND $col IN (" . implode(',', array_fill(0, count($values), '?')) . ")";
+            foreach ($values as $v) $params[] = (string)$v;
+        }
+    }
+    return [$where, $params];
 }
 
 // --- API / AJAX BACKEND CONTROLLER ---
@@ -34,6 +149,7 @@ if (isset($_GET['api'])) {
 
     if ($action === 'export_csv') {
         if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
+            http_response_code(401);
             exit;
         }
 
@@ -51,12 +167,20 @@ if (isset($_GET['api'])) {
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         if (!empty($rows)) {
-            fputcsv($output, array_keys($rows[0]), ';', '"', '\\');
+            // image_data (huge base64) is excluded from the export
+            $header = array_values(array_filter(array_keys($rows[0]), fn($k) => $k !== 'image_data'));
+            fputcsv($output, $header, ';', '"', '\\');
             foreach ($rows as $row) {
                 if (isset($row['VerbFlag'])) {
                     $row['VerbFlag'] = (int)$row['VerbFlag'] === 1 ? 1 : 0;
                 }
                 unset($row['image_data']);
+                // Prevent CSV/Excel formula injection
+                foreach ($row as $k => $v) {
+                    if (is_string($v) && $v !== '' && in_array($v[0], ['=', '+', '-', '@'], true)) {
+                        $row[$k] = "'" . $v;
+                    }
+                }
                 fputcsv($output, $row, ';', '"', '\\');
             }
         }
@@ -66,6 +190,12 @@ if (isset($_GET['api'])) {
     }
 
     if ($action === 'view_image') {
+        // SECURITY FIX: images are only visible to logged-in users
+        if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
+            http_response_code(401);
+            exit;
+        }
+
         $word = trim($_GET['word'] ?? '');
         if (empty($word)) {
             http_response_code(400);
@@ -77,15 +207,18 @@ if (isset($_GET['api'])) {
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($row && !empty($row['image_data'])) {
-            $mime = !empty($row['mime_type']) ? $row['mime_type'] : 'image/png';
-            
+            // Only allow real image types
+            $allowedMimes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+            $mime = (!empty($row['mime_type']) && in_array($row['mime_type'], $allowedMimes, true)) ? $row['mime_type'] : 'image/png';
+
             if (ob_get_level()) {
                 ob_end_clean();
             }
 
             header('Content-Type: ' . $mime);
+            header('X-Content-Type-Options: nosniff');
             header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-            
+
             $imageData = $row['image_data'];
             if (strpos($imageData, 'data:image') === 0) {
                 $base64String = substr($imageData, strpos($imageData, ',') + 1);
@@ -104,7 +237,8 @@ if (isset($_GET['api'])) {
     }
 
     header('Content-Type: application/json');
-    
+    header('X-Content-Type-Options: nosniff');
+
     if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
         echo json_encode(['error' => 'Unauthorized']);
         exit;
@@ -113,7 +247,7 @@ if (isset($_GET['api'])) {
     session_write_close();
 
     if ($action === 'generate_ai_image') {
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = jsonInput();
         $word = trim($input['word'] ?? '');
         $translation = trim($input['translation'] ?? '');
         $thema = trim($input['thema'] ?? '');
@@ -147,6 +281,7 @@ if (isset($_GET['api'])) {
 
         $ch = curl_init($apiUrl);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 90);
         curl_setopt($ch, CURLOPT_HTTPHEADER, [
             'Content-Type: application/json',
             'x-goog-api-key: ' . GEMINI_API_KEY
@@ -162,7 +297,7 @@ if (isset($_GET['api'])) {
             exit;
         }
 
-        $responseData = json_decode($response, true);
+        $responseData = json_decode((string)$response, true);
         $imageBase64 = null;
         $mimeType = 'image/png';
 
@@ -205,30 +340,27 @@ if (isset($_GET['api'])) {
         $filterPraefix = $_GET['praefix'] ?? '';
         $sort = $_GET['sort'] ?? 'Wort';
         $order = $_GET['order'] ?? 'ASC';
-        $offset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
+        $offset = max(0, isset($_GET['offset']) ? (int)$_GET['offset'] : 0);
         $limit = 50;
 
         $allowed_sorts = ['sharepoint_list', 'Thema', 'Wortarten', 'Wort', 'Artikel', 'Plural', 'Score', 'Status', 'Created', 'Modified', 'NachsteUbungDatum', 'VerbFlag', 'Konjugation', 'grundverb', 'praefix'];
-        if (!in_array($sort, $allowed_sorts)) $sort = 'Wort';
+        if (!in_array($sort, $allowed_sorts, true)) $sort = 'Wort';
         $order = ($order === 'DESC') ? 'DESC' : 'ASC';
 
-        $query = "SELECT sharepoint_list, Thema, Wortarten, Wort, Artikel, Plural, Score, Status, Created, Modified, NachsteUbungDatum, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Übersetzung, synonym, Beispiel FROM meine_wortschatz WHERE 1=1";
+        $query = "SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE 1=1";
         $params = [];
 
         if (!empty($filterLetter)) {
             $query .= " AND Wort LIKE ?";
-            $params[] = "$filterLetter%";
+            $params[] = likeEscape($filterLetter) . "%";
         }
         if (!empty($filterSearch)) {
             $query .= " AND Wort LIKE ?";
-            $params[] = "$filterSearch%";
+            $params[] = likeEscape($filterSearch) . "%";
         }
         if (!empty($filterTransSearch)) {
-            $query .= " AND (Übersetzung LIKE ? OR Übersetzung LIKE ? OR Übersetzung LIKE ? OR Übersetzung = ?)";
-            $params[] = "%$filterTransSearch%";
-            $params[] = "$filterTransSearch%";
-            $params[] = "$filterTransSearch";
-            $params[] = $filterTransSearch;
+            $query .= " AND Übersetzung LIKE ?";
+            $params[] = "%" . likeEscape($filterTransSearch) . "%";
         }
         if (!empty($filterList)) {
             $query .= " AND sharepoint_list = ?";
@@ -265,13 +397,13 @@ if (isset($_GET['api'])) {
         }
 
         $query .= " ORDER BY $sort $order LIMIT $limit OFFSET $offset";
-        
+
         $stmt = $pdo->prepare($query);
         $stmt->execute($params);
         $words = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         foreach ($words as &$w) {
-            $w['VerbFlag'] = isset($w['VerbFlag']) && (int)$w['VerbFlag'] === 1 ? 1 : 0;
+            normalizeVerbFlag($w);
         }
         unset($w);
 
@@ -323,10 +455,10 @@ if (isset($_GET['api'])) {
             $scores = $pdo->query("SELECT DISTINCT Score FROM meine_wortschatz WHERE Score IS NOT NULL ORDER BY Score ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
             $grundverben = $pdo->query("SELECT DISTINCT grundverb FROM meine_wortschatz WHERE grundverb IS NOT NULL AND grundverb != '' ORDER BY grundverb ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
             $praefixe = $pdo->query("SELECT DISTINCT praefix FROM meine_wortschatz WHERE praefix IS NOT NULL AND praefix != '' ORDER BY praefix ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
-            
+
             $statusesStmt = $pdo->query("SELECT DISTINCT Status FROM meine_wortschatz WHERE Status IS NOT NULL AND Status != '' ORDER BY FIELD(Status, 'aktiva', 'wiederholen', 'neu', 'passiv', 'warteschlange')");
             $statuses = $statusesStmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
-            
+
             $mappingStmt = $pdo->query("SELECT DISTINCT Thema, Wortarten FROM meine_wortschatz WHERE Thema IS NOT NULL AND Thema != '' AND Wortarten IS NOT NULL AND Wortarten != '' ORDER BY Thema ASC, Wortarten ASC");
             $pairs = $mappingStmt->fetchAll(PDO::FETCH_ASSOC);
             $themaWortartenMap = [];
@@ -342,41 +474,42 @@ if (isset($_GET['api'])) {
             }
 
             echo json_encode([
-                'success' => true, 
-                'lists' => $lists, 
-                'themen' => $themen, 
-                'wortarten' => $wortarten, 
-                'scores' => $scores, 
+                'success' => true,
+                'lists' => $lists,
+                'themen' => $themen,
+                'wortarten' => $wortarten,
+                'scores' => $scores,
                 'statuses' => $statuses,
                 'grundverben' => $grundverben,
                 'praefixe' => $praefixe,
                 'themaWortartenMap' => $themaWortartenMap
             ]);
         } catch (Exception $e) {
-            echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+            error_log($e->getMessage());
+            echo json_encode(['success' => false, 'error' => 'Metadaten konnten nicht geladen werden.']);
         }
         exit;
     }
 
     if ($action === 'save') {
-        $input = json_decode(file_get_contents('php://input'), true);
-        $sharepointList = trim($input['sharepoint_list'] ?? null);
-        $thema = trim($input['Thema'] ?? null);
+        $input = jsonInput();
+        $sharepointList = trim($input['sharepoint_list'] ?? '');
+        $thema = trim($input['Thema'] ?? '');
         $wort = trim($input['Wort'] ?? '');
-        $artikel = trim($input['Artikel'] ?? null);
+        $artikel = trim($input['Artikel'] ?? '');
         $verbFlag = (isset($input['VerbFlag']) && (int)$input['VerbFlag'] === 1) ? 1 : 0;
-        $plural = $verbFlag === 1 ? null : trim($input['Plural'] ?? null);
-        $uebersetzung = trim($input['Übersetzung'] ?? null);
-        $synonym = trim($input['synonym'] ?? null);
-        $wortarten = trim($input['Wortarten'] ?? null);
-        $beispiel = trim($input['Beispiel'] ?? null);
+        $plural = $verbFlag === 1 ? null : trim($input['Plural'] ?? '');
+        $uebersetzung = trim($input['Übersetzung'] ?? '');
+        $synonym = trim($input['synonym'] ?? '');
+        $wortarten = trim($input['Wortarten'] ?? '');
+        $beispiel = trim($input['Beispiel'] ?? '');
         $score = !empty($input['Score']) ? (int)$input['Score'] : 0;
         $status = trim($input['Status'] ?? '') ?: 'neu';
-        
-        $konjugation = trim($input['Konjugation'] ?? null);
-        $grundverb = $verbFlag === 1 ? trim($input['grundverb'] ?? null) : null;
-        $praefix = $verbFlag === 1 ? trim($input['praefix'] ?? null) : null;
-        $praeposition_kollokation = $verbFlag === 1 ? trim($input['praeposition_kollokation'] ?? null) : null;
+
+        $konjugation = trim($input['Konjugation'] ?? '');
+        $grundverb = $verbFlag === 1 ? trim($input['grundverb'] ?? '') : null;
+        $praefix = $verbFlag === 1 ? trim($input['praefix'] ?? '') : null;
+        $praeposition_kollokation = $verbFlag === 1 ? trim($input['praeposition_kollokation'] ?? '') : null;
         $originalWort = trim($input['original_wort'] ?? '');
 
         if (empty($wort)) {
@@ -397,18 +530,20 @@ if (isset($_GET['api'])) {
     }
 
     if ($action === 'delete') {
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = jsonInput();
         $wortToDelete = $input['Wort'] ?? '';
         if (!empty($wortToDelete)) {
             $stmt = $pdo->prepare("DELETE FROM meine_wortschatz WHERE Wort = ?");
             $stmt->execute([$wortToDelete]);
             echo json_encode(['success' => true, 'message' => "Wort '$wortToDelete' gelöscht."]);
+        } else {
+            echo json_encode(['success' => false, 'message' => 'Ungültiges Wort.']);
         }
         exit;
     }
 
     if ($action === 'direct_promote') {
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = jsonInput();
         $wortToPromote = trim($input['Wort'] ?? '');
         if (!empty($wortToPromote)) {
             $stmt = $pdo->prepare("UPDATE meine_wortschatz SET Score = 10, Status = 'aktiva', Modified = NOW(), NachsteUbungDatum = DATE_ADD(NOW(), INTERVAL (10 * 10) DAY) WHERE Wort = ?");
@@ -421,7 +556,7 @@ if (isset($_GET['api'])) {
     }
 
     if ($action === 'ai_fill_word') {
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = jsonInput();
         $wort = trim($input['word'] ?? '');
 
         if (empty($wort)) {
@@ -445,228 +580,34 @@ if (isset($_GET['api'])) {
                     "  \"beispiel\": \"Beispielsatz auf Deutsch und Übersetzung auf Französisch\"\n" .
                     "}";
 
-        $curl = curl_init();
-        curl_setopt_array($curl, [
-            CURLOPT_URL => "https://deepseek-v31.p.rapidapi.com/",
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_ENCODING => "",
-            CURLOPT_MAXREDIRS => 10,
-            CURLOPT_TIMEOUT => 30,
-            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-            CURLOPT_CUSTOMREQUEST => "POST",
-            CURLOPT_POSTFIELDS => json_encode([
-                'model' => 'DeepSeek-V3.2',
-                'messages' => [
-                    [
-                        'role' => 'user',
-                        'content' => $userPrompt
-                    ]
-                ]
-            ]),
-            CURLOPT_HTTPHEADER => [
-                "Content-Type: application/json",
-                "x-rapidapi-host: deepseek-v31.p.rapidapi.com",
-                "x-rapidapi-key: 447ab2c8bbmshf4a7532617c3948p1602eejsnd20917218f6c"
-            ],
-        ]);
-        $response = curl_exec($curl);
-        $err = curl_error($curl);
-        curl_close($curl);
-
-        if ($err) {
-            echo json_encode(['success' => false, 'error' => "cURL Fehler #: " . $err]);
+        $ai = callDeepSeek($userPrompt);
+        if (!$ai['ok']) {
+            echo json_encode(['success' => false, 'error' => $ai['error']]);
             exit;
         }
 
-        $data = json_decode($response, true);
-        $content = '';
-        if (isset($data['choices'][0]['message']['content'])) {
-            $content = $data['choices'][0]['message']['content'];
-        } elseif (isset($data['choices'][0]['text'])) {
-            $content = $data['choices'][0]['text'];
-        } elseif (isset($data['content'])) {
-            $content = $data['content'];
-        } else {
-            $content = $response;
-        }
-
-        $cleanedJson = trim($content);
-        if (preg_match('/```json\s*(.*?)\s*```/s', $cleanedJson, $matches)) {
-            $cleanedJson = $matches[1];
-        } elseif (preg_match('/```\s*(.*?)\s*```/s', $cleanedJson, $matches)) {
-            $cleanedJson = $matches[1];
-        }
-
-        $parsedData = json_decode($cleanedJson, true);
+        $parsedData = parseAiJson($ai['content']);
         if (!$parsedData) {
-            echo json_encode(['success' => true, 'raw' => $content]);
+            echo json_encode(['success' => true, 'raw' => $ai['content']]);
         } else {
             echo json_encode(['success' => true, 'ai_data' => $parsedData]);
         }
         exit;
     }
 
-    if ($action === 'ai_story_game_next') {
-        $input = json_decode(file_get_contents('php://input'), true);
-        $selectedStatuses = $input['statuses'] ?? [];
-        $selectedLists = $input['sharepoint_lists'] ?? [];
-        $selectedThemen = $input['themen'] ?? [];
-        $categories = $input['categories'] ?? [];
+    if ($action === 'ai_story_game_next' || $action === 'ai_story_writer_next') {
+        $input = jsonInput();
+        [$where, $params] = buildGameFilter($input);
 
-        $query = "SELECT sharepoint_list, Thema, Wortarten, Wort, Artikel, Plural, Score, Status, Created, Modified, NachsteUbungDatum, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Übersetzung, synonym, Beispiel FROM meine_wortschatz WHERE 1=1";
-        $params = [];
-
-        if (!empty($selectedStatuses)) {
-            $placeholders = implode(',', array_fill(0, count($selectedStatuses), '?'));
-            $query .= " AND Status IN ($placeholders)";
-            foreach ($selectedStatuses as $st) $params[] = $st;
-        }
-        if (!empty($selectedLists)) {
-            $placeholders = implode(',', array_fill(0, count($selectedLists), '?'));
-            $query .= " AND sharepoint_list IN ($placeholders)";
-            foreach ($selectedLists as $lst) $params[] = $lst;
-        }
-        if (!empty($selectedThemen)) {
-            $placeholders = implode(',', array_fill(0, count($selectedThemen), '?'));
-            $query .= " AND Thema IN ($placeholders)";
-            foreach ($selectedThemen as $thm) $params[] = $thm;
-        }
-        if (!empty($categories)) {
-            $placeholders = implode(',', array_fill(0, count($categories), '?'));
-            $query .= " AND Wortarten IN ($placeholders)";
-            foreach ($categories as $cat) $params[] = $cat;
-        }
-
-        $query .= " ORDER BY RAND() LIMIT 5";
-
-        $stmt = $pdo->prepare($query);
+        $stmt = $pdo->prepare("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE 1=1" . $where . " ORDER BY RAND() LIMIT 5");
         $stmt->execute($params);
         $chosenWords = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         if (count($chosenWords) < 5) {
             $needed = 5 - count($chosenWords);
-            $fallbackStmt = $pdo->prepare("SELECT sharepoint_list, Thema, Wortarten, Wort, Artikel, Plural, Score, Status, Created, Modified, NachsteUbungDatum, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Übersetzung, synonym, Beispiel FROM meine_wortschatz ORDER BY RAND() LIMIT ?");
+            $fallbackStmt = $pdo->prepare("SELECT " . WORD_COLS . " FROM meine_wortschatz ORDER BY RAND() LIMIT ?");
             $fallbackStmt->execute([$needed]);
-            $fallbackWords = $fallbackStmt->fetchAll(PDO::FETCH_ASSOC);
-            $chosenWords = array_merge($chosenWords, $fallbackWords);
-        }
-
-        if (empty($chosenWords)) {
-            echo json_encode(['success' => false, 'error' => 'Keine passenden Wörter gefunden.']);
-            exit;
-        }
-
-        $wordTokens = [];
-        foreach ($chosenWords as $w) {
-            $wordTokens[] = $w['Wort'];
-        }
-
-        $wordsListStr = implode(', ', $wordTokens);
-        $userPrompt = "Schreibe eine kurze Geschichte auf Deutsch (maximal 300 Wörter), die unbedingt die folgenden 5 Wörter enthält: $wordsListStr. Verwende diese Wörter natürlich im Kontext.";
-
-        $curl = curl_init();
-        curl_setopt_array($curl, [
-            CURLOPT_URL => "https://deepseek-v31.p.rapidapi.com/",
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_ENCODING => "",
-            CURLOPT_MAXREDIRS => 10,
-            CURLOPT_TIMEOUT => 30,
-            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-            CURLOPT_CUSTOMREQUEST => "POST",
-            CURLOPT_POSTFIELDS => json_encode([
-                'model' => 'DeepSeek-V3.2',
-                'messages' => [
-                    [
-                        'role' => 'user',
-                        'content' => $userPrompt
-                    ]
-                ]
-            ]),
-            CURLOPT_HTTPHEADER => [
-                "Content-Type: application/json",
-                "x-rapidapi-host: deepseek-v31.p.rapidapi.com",
-                "x-rapidapi-key: 447ab2c8bbmshf4a7532617c3948p1602eejsnd20917218f6c"
-            ],
-        ]);
-        $response = curl_exec($curl);
-        $err = curl_error($curl);
-        curl_close($curl);
-
-        if ($err) {
-            echo json_encode(['success' => false, 'error' => "cURL Fehler #: " . $err]);
-            exit;
-        }
-
-        $data = json_decode($response, true);
-        $story = '';
-        if (isset($data['choices'][0]['message']['content'])) {
-            $story = $data['choices'][0]['message']['content'];
-        } elseif (isset($data['choices'][0]['text'])) {
-            $story = $data['choices'][0]['text'];
-        } elseif (isset($data['content'])) {
-            $story = $data['content'];
-        } elseif (is_string($response) && !empty(trim($response))) {
-            $story = $response;
-        } else {
-            $story = "Es konnte keine Geschichte generiert werden.";
-        }
-
-        foreach ($chosenWords as &$cw) {
-            $cw['VerbFlag'] = isset($cw['VerbFlag']) && (int)$cw['VerbFlag'] === 1 ? 1 : 0;
-        }
-        unset($cw);
-
-        echo json_encode([
-            'success' => true,
-            'story' => trim($story),
-            'words' => $chosenWords
-        ]);
-        exit;
-    }
-
-    if ($action === 'ai_story_writer_next') {
-        $input = json_decode(file_get_contents('php://input'), true);
-        $selectedStatuses = $input['statuses'] ?? [];
-        $selectedLists = $input['sharepoint_lists'] ?? [];
-        $selectedThemen = $input['themen'] ?? [];
-        $categories = $input['categories'] ?? [];
-
-        $query = "SELECT sharepoint_list, Thema, Wortarten, Wort, Artikel, Plural, Score, Status, Created, Modified, NachsteUbungDatum, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Übersetzung, synonym, Beispiel FROM meine_wortschatz WHERE 1=1";
-        $params = [];
-
-        if (!empty($selectedStatuses)) {
-            $placeholders = implode(',', array_fill(0, count($selectedStatuses), '?'));
-            $query .= " AND Status IN ($placeholders)";
-            foreach ($selectedStatuses as $st) $params[] = $st;
-        }
-        if (!empty($selectedLists)) {
-            $placeholders = implode(',', array_fill(0, count($selectedLists), '?'));
-            $query .= " AND sharepoint_list IN ($placeholders)";
-            foreach ($selectedLists as $lst) $params[] = $lst;
-        }
-        if (!empty($selectedThemen)) {
-            $placeholders = implode(',', array_fill(0, count($selectedThemen), '?'));
-            $query .= " AND Thema IN ($placeholders)";
-            foreach ($selectedThemen as $thm) $params[] = $thm;
-        }
-        if (!empty($categories)) {
-            $placeholders = implode(',', array_fill(0, count($categories), '?'));
-            $query .= " AND Wortarten IN ($placeholders)";
-            foreach ($categories as $cat) $params[] = $cat;
-        }
-
-        $query .= " ORDER BY RAND() LIMIT 5";
-
-        $stmt = $pdo->prepare($query);
-        $stmt->execute($params);
-        $chosenWords = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        if (count($chosenWords) < 5) {
-            $needed = 5 - count($chosenWords);
-            $fallbackStmt = $pdo->prepare("SELECT sharepoint_list, Thema, Wortarten, Wort, Artikel, Plural, Score, Status, Created, Modified, NachsteUbungDatum, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Übersetzung, synonym, Beispiel FROM meine_wortschatz ORDER BY RAND() LIMIT ?");
-            $fallbackStmt->execute([$needed]);
-            $fallbackWords = $fallbackStmt->fetchAll(PDO::FETCH_ASSOC);
-            $chosenWords = array_merge($chosenWords, $fallbackWords);
+            $chosenWords = array_merge($chosenWords, $fallbackStmt->fetchAll(PDO::FETCH_ASSOC));
         }
 
         if (empty($chosenWords)) {
@@ -675,19 +616,32 @@ if (isset($_GET['api'])) {
         }
 
         foreach ($chosenWords as &$cw) {
-            $cw['VerbFlag'] = isset($cw['VerbFlag']) && (int)$cw['VerbFlag'] === 1 ? 1 : 0;
+            normalizeVerbFlag($cw);
         }
         unset($cw);
 
+        if ($action === 'ai_story_writer_next') {
+            echo json_encode(['success' => true, 'words' => $chosenWords]);
+            exit;
+        }
+
+        $wordsListStr = implode(', ', array_column($chosenWords, 'Wort'));
+        $ai = callDeepSeek("Schreibe eine kurze Geschichte auf Deutsch (maximal 300 Wörter), die unbedingt die folgenden 5 Wörter enthält: $wordsListStr. Verwende diese Wörter natürlich im Kontext.");
+        if (!$ai['ok']) {
+            echo json_encode(['success' => false, 'error' => $ai['error']]);
+            exit;
+        }
+
         echo json_encode([
             'success' => true,
+            'story' => $ai['content'] !== '' ? $ai['content'] : "Es konnte keine Geschichte generiert werden.",
             'words' => $chosenWords
         ]);
         exit;
     }
 
     if ($action === 'ai_story_writer_check') {
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = jsonInput();
         $userStory = trim($input['story'] ?? '');
         $words = $input['words'] ?? [];
 
@@ -697,7 +651,7 @@ if (isset($_GET['api'])) {
         }
 
         $wordTokens = [];
-        foreach ($words as $w) {
+        foreach ((array)$words as $w) {
             if (is_array($w) && isset($w['Wort'])) {
                 $wordTokens[] = $w['Wort'];
             } elseif (is_string($w)) {
@@ -713,66 +667,25 @@ if (isset($_GET['api'])) {
                     "2. Korrigiere eventuelle Grammatik- oder Rechtschreibfehler in der Geschichte.\n" .
                     "3. Gib eine kurze, konstruktive Rückmeldung auf Deutsch.";
 
-        $curl = curl_init();
-        curl_setopt_array($curl, [
-            CURLOPT_URL => "https://deepseek-v31.p.rapidapi.com/",
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_ENCODING => "",
-            CURLOPT_MAXREDIRS => 10,
-            CURLOPT_TIMEOUT => 30,
-            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-            CURLOPT_CUSTOMREQUEST => "POST",
-            CURLOPT_POSTFIELDS => json_encode([
-                'model' => 'DeepSeek-V3.2',
-                'messages' => [
-                    [
-                        'role' => 'user',
-                        'content' => $userPrompt
-                    ]
-                ]
-            ]),
-            CURLOPT_HTTPHEADER => [
-                "Content-Type: application/json",
-                "x-rapidapi-host: deepseek-v31.p.rapidapi.com",
-                "x-rapidapi-key: 447ab2c8bbmshf4a7532617c3948p1602eejsnd20917218f6c"
-            ],
-        ]);
-        $response = curl_exec($curl);
-        $err = curl_error($curl);
-        curl_close($curl);
-
-        if ($err) {
-            echo json_encode(['success' => false, 'error' => "cURL Fehler #: " . $err]);
+        $ai = callDeepSeek($userPrompt);
+        if (!$ai['ok']) {
+            echo json_encode(['success' => false, 'error' => $ai['error']]);
             exit;
-        }
-
-        $data = json_decode($response, true);
-        $correction = '';
-        if (isset($data['choices'][0]['message']['content'])) {
-            $correction = $data['choices'][0]['message']['content'];
-        } elseif (isset($data['choices'][0]['text'])) {
-            $correction = $data['choices'][0]['text'];
-        } elseif (isset($data['content'])) {
-            $correction = $data['content'];
-        } elseif (is_string($response) && !empty(trim($response))) {
-            $correction = $response;
-        } else {
-            $correction = "Es konnte keine Korrektur generiert werden.";
         }
 
         echo json_encode([
             'success' => true,
-            'correction' => trim($correction)
+            'correction' => $ai['content'] !== '' ? $ai['content'] : "Es konnte keine Korrektur generiert werden."
         ]);
         exit;
     }
 
     if ($action === 'der_die_das_next') {
-        $stmt = $pdo->query("SELECT sharepoint_list, Thema, Wortarten, Wort, Artikel, Plural, Score, Status, Created, Modified, NachsteUbungDatum, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Übersetzung, synonym, Beispiel FROM meine_wortschatz WHERE Status = 'aktiva' AND Artikel IN ('der', 'die', 'das') ORDER BY RAND() LIMIT 1");
+        $stmt = $pdo->query("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE Status = 'aktiva' AND Artikel IN ('der', 'die', 'das') ORDER BY RAND() LIMIT 1");
         $word = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($word) {
-            $word['VerbFlag'] = isset($word['VerbFlag']) && (int)$word['VerbFlag'] === 1 ? 1 : 0;
+            normalizeVerbFlag($word);
             echo json_encode(['success' => true, 'word' => $word]);
         } else {
             echo json_encode(['success' => false, 'error' => 'Keine passenden aktiva Wörter mit Artikel (der, die, das) gefunden.']);
@@ -781,11 +694,11 @@ if (isset($_GET['api'])) {
     }
 
     if ($action === 'deutsch_meister_next') {
-        $stmt = $pdo->query("SELECT sharepoint_list, Thema, Wortarten, Wort, Artikel, Plural, Score, Status, Created, Modified, NachsteUbungDatum, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Übersetzung, synonym, Beispiel FROM meine_wortschatz WHERE Status = 'aktiva' ORDER BY RAND() LIMIT 1");
+        $stmt = $pdo->query("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE Status = 'aktiva' ORDER BY RAND() LIMIT 1");
         $word = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($word) {
-            $word['VerbFlag'] = isset($word['VerbFlag']) && (int)$word['VerbFlag'] === 1 ? 1 : 0;
+            normalizeVerbFlag($word);
             echo json_encode(['success' => true, 'word' => $word]);
         } else {
             echo json_encode(['success' => false, 'error' => 'Keine passenden aktiva Wörter gefunden.']);
@@ -794,7 +707,7 @@ if (isset($_GET['api'])) {
     }
 
     if ($action === 'deutsch_meister_check_sentence') {
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = jsonInput();
         $sentence = trim($input['sentence'] ?? '');
         $word = trim($input['word'] ?? '');
 
@@ -815,59 +728,13 @@ if (isset($_GET['api'])) {
                     "  \"feedback\": \"Deine Korrektur oder Erklärung auf Deutsch\"\n" .
                     "}";
 
-        $curl = curl_init();
-        curl_setopt_array($curl, [
-            CURLOPT_URL => "https://deepseek-v31.p.rapidapi.com/",
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_ENCODING => "",
-            CURLOPT_MAXREDIRS => 10,
-            CURLOPT_TIMEOUT => 30,
-            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-            CURLOPT_CUSTOMREQUEST => "POST",
-            CURLOPT_POSTFIELDS => json_encode([
-                'model' => 'DeepSeek-V3.2',
-                'messages' => [
-                    [
-                        'role' => 'user',
-                        'content' => $userPrompt
-                    ]
-                ]
-            ]),
-            CURLOPT_HTTPHEADER => [
-                "Content-Type: application/json",
-                "x-rapidapi-host: deepseek-v31.p.rapidapi.com",
-                "x-rapidapi-key: 447ab2c8bbmshf4a7532617c3948p1602eejsnd20917218f6c"
-            ],
-        ]);
-        $response = curl_exec($curl);
-        $err = curl_error($curl);
-        curl_close($curl);
-
-        if ($err) {
-            echo json_encode(['success' => false, 'error' => "cURL Fehler #: " . $err]);
+        $ai = callDeepSeek($userPrompt);
+        if (!$ai['ok']) {
+            echo json_encode(['success' => false, 'error' => $ai['error']]);
             exit;
         }
 
-        $data = json_decode($response, true);
-        $content = '';
-        if (isset($data['choices'][0]['message']['content'])) {
-            $content = $data['choices'][0]['message']['content'];
-        } elseif (isset($data['choices'][0]['text'])) {
-            $content = $data['choices'][0]['text'];
-        } elseif (isset($data['content'])) {
-            $content = $data['content'];
-        } else {
-            $content = $response;
-        }
-
-        $cleanedJson = trim($content);
-        if (preg_match('/```json\s*(.*?)\s*```/s', $cleanedJson, $matches)) {
-            $cleanedJson = $matches[1];
-        } elseif (preg_match('/```\s*(.*?)\s*```/s', $cleanedJson, $matches)) {
-            $cleanedJson = $matches[1];
-        }
-
-        $parsedData = json_decode($cleanedJson, true);
+        $parsedData = parseAiJson($ai['content']);
         $evalResult = 'grammar_wrong';
         $feedback = "";
 
@@ -875,8 +742,7 @@ if (isset($_GET['api'])) {
             $evalResult = $parsedData['evaluation_result'];
             $feedback = $parsedData['feedback'] ?? '';
         } else {
-            $evalResult = 'grammar_wrong';
-            $feedback = $content;
+            $feedback = $ai['content'];
         }
 
         $points = 0;
@@ -907,7 +773,7 @@ if (isset($_GET['api'])) {
             $update->execute([$newScore, $newStatus, $newAddDatum, $word]);
         }
 
-        $detailStmt = $pdo->prepare("SELECT * FROM meine_wortschatz WHERE Wort = ? LIMIT 1");
+        $detailStmt = $pdo->prepare("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE Wort = ? LIMIT 1");
         $detailStmt->execute([$word]);
         $wordDetails = $detailStmt->fetch(PDO::FETCH_ASSOC);
 
@@ -922,7 +788,7 @@ if (isset($_GET['api'])) {
     }
 
     if ($action === 'der_die_das_answer') {
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = jsonInput();
         $wort = trim($input['wort'] ?? '');
         $guessedArtikel = strtolower(trim($input['artikel'] ?? ''));
         $currentStreak = (int)($input['current_streak'] ?? 0);
@@ -979,7 +845,7 @@ if (isset($_GET['api'])) {
     }
 
     if ($action === 'der_die_das_check_sentence' || $action === 'check_sentence_booster') {
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = jsonInput();
         $sentence = trim($input['sentence'] ?? '');
         $word = trim($input['word'] ?? '');
         $previousWasRight = !empty($input['previous_was_right']);
@@ -1001,59 +867,13 @@ if (isset($_GET['api'])) {
                     "  \"feedback\": \"Deine kurze Rückmeldung oder Korrektur auf Deutsch\"\n" .
                     "}";
 
-        $curl = curl_init();
-        curl_setopt_array($curl, [
-            CURLOPT_URL => "https://deepseek-v31.p.rapidapi.com/",
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_ENCODING => "",
-            CURLOPT_MAXREDIRS => 10,
-            CURLOPT_TIMEOUT => 30,
-            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-            CURLOPT_CUSTOMREQUEST => "POST",
-            CURLOPT_POSTFIELDS => json_encode([
-                'model' => 'DeepSeek-V3.2',
-                'messages' => [
-                    [
-                        'role' => 'user',
-                        'content' => $userPrompt
-                    ]
-                ]
-            ]),
-            CURLOPT_HTTPHEADER => [
-                "Content-Type: application/json",
-                "x-rapidapi-host: deepseek-v31.p.rapidapi.com",
-                "x-rapidapi-key: 447ab2c8bbmshf4a7532617c3948p1602eejsnd20917218f6c"
-            ],
-        ]);
-        $response = curl_exec($curl);
-        $err = curl_error($curl);
-        curl_close($curl);
-
-        if ($err) {
-            echo json_encode(['success' => false, 'error' => "cURL Fehler #: " . $err]);
+        $ai = callDeepSeek($userPrompt);
+        if (!$ai['ok']) {
+            echo json_encode(['success' => false, 'error' => $ai['error']]);
             exit;
         }
 
-        $data = json_decode($response, true);
-        $content = '';
-        if (isset($data['choices'][0]['message']['content'])) {
-            $content = $data['choices'][0]['message']['content'];
-        } elseif (isset($data['choices'][0]['text'])) {
-            $content = $data['choices'][0]['text'];
-        } elseif (isset($data['content'])) {
-            $content = $data['content'];
-        } else {
-            $content = $response;
-        }
-
-        $cleanedJson = trim($content);
-        if (preg_match('/```json\s*(.*?)\s*```/s', $cleanedJson, $matches)) {
-            $cleanedJson = $matches[1];
-        } elseif (preg_match('/```\s*(.*?)\s*```/s', $cleanedJson, $matches)) {
-            $cleanedJson = $matches[1];
-        }
-
-        $parsedData = json_decode($cleanedJson, true);
+        $parsedData = parseAiJson($ai['content']);
         $isGrammaticallyCorrect = false;
         $isIdiomaticallyCorrect = false;
         $feedbackMessage = "";
@@ -1063,12 +883,10 @@ if (isset($_GET['api'])) {
             $isIdiomaticallyCorrect = isset($parsedData['is_idiomatically_correct']) && ($parsedData['is_idiomatically_correct'] === true || strtolower((string)$parsedData['is_idiomatically_correct']) === 'true');
             $feedbackMessage = $parsedData['feedback'] ?? '';
         } else {
-            $isGrammaticallyCorrect = false;
-            $feedbackMessage = $content;
+            $feedbackMessage = $ai['content'];
         }
 
         $pointsToAdd = 0;
-        $statusMessage = "";
 
         $stmt = $pdo->prepare("SELECT Score, Status FROM meine_wortschatz WHERE Wort = ?");
         $stmt->execute([$word]);
@@ -1078,25 +896,14 @@ if (isset($_GET['api'])) {
             $currentScore = (int)$row['Score'];
             $isAktiva = (strtolower(trim($row['Status'] ?? '')) === 'aktiva');
 
-            if ($isGrammaticallyCorrect) {
-                if ($isIdiomaticallyCorrect && $isAktiva) {
-                    if ($action === 'check_sentence_booster') {
-                        $pointsToAdd = 9;
-                    } else {
-                        if ($previousWasRight) {
-                            $pointsToAdd = 9;
-                        } else {
-                            $pointsToAdd = 3;
-                        }
-                    }
-                    $statusMessage = "Full Booster applied (+{$pointsToAdd} points).";
+            if ($isGrammaticallyCorrect && $isIdiomaticallyCorrect && $isAktiva) {
+                if ($action === 'check_sentence_booster') {
+                    $pointsToAdd = 9;
                 } else {
-                    $pointsToAdd = 1;
-                    $statusMessage = "Grammatically correct, awarded 1 point.";
+                    $pointsToAdd = $previousWasRight ? 9 : 3;
                 }
             } else {
                 $pointsToAdd = 1;
-                $statusMessage = "Grammar incorrect, awarded 1 point.";
             }
 
             $newScore = $currentScore + $pointsToAdd;
@@ -1118,7 +925,7 @@ if (isset($_GET['api'])) {
     }
 
     if ($action === 'game_next') {
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = jsonInput();
         $mode = $input['mode'] ?? 'standard';
         $selectedStatuses = $input['statuses'] ?? [];
         $sortOrder = ($input['sort_order'] ?? 'ASC') === 'DESC' ? 'DESC' : 'ASC';
@@ -1132,22 +939,20 @@ if (isset($_GET['api'])) {
                 $statusParams = $selectedStatuses;
             }
 
-            $stmtQuery = "SELECT sharepoint_list, Thema, Wortarten, Wort, Artikel, Plural, Score, Status, Created, Modified, NachsteUbungDatum, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Übersetzung, synonym, Beispiel FROM meine_wortschatz WHERE 1=1" . $statusClause . " ORDER BY NachsteUbungDatum $sortOrder, Created $sortOrder LIMIT 500";
-            $stmt = $pdo->prepare($stmtQuery);
+            $stmt = $pdo->prepare("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE 1=1" . $statusClause . " ORDER BY NachsteUbungDatum $sortOrder, Created $sortOrder LIMIT 500");
             $stmt->execute($statusParams);
             $candidates = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             if (empty($candidates)) {
-                $fallback = $pdo->query("SELECT sharepoint_list, Thema, Wortarten, Wort, Artikel, Plural, Score, Status, Created, Modified, NachsteUbungDatum, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Übersetzung, synonym, Beispiel FROM meine_wortschatz WHERE Übersetzung IS NOT NULL AND Übersetzung != '' ORDER BY RAND() LIMIT 1");
+                $fallback = $pdo->query("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE Übersetzung IS NOT NULL AND Übersetzung != '' ORDER BY RAND() LIMIT 1");
                 $targetWord = $fallback->fetch(PDO::FETCH_ASSOC);
             } else {
                 $targetWord = $candidates[array_rand($candidates)];
             }
 
             if ($targetWord) {
-                $targetWord['VerbFlag'] = isset($targetWord['VerbFlag']) && (int)$targetWord['VerbFlag'] === 1 ? 1 : 0;
-                $wrongQuery = "SELECT DISTINCT Übersetzung FROM meine_wortschatz WHERE Übersetzung IS NOT NULL AND Übersetzung != '' AND Übersetzung != ? ORDER BY RAND() LIMIT 3";
-                $wrongStmt = $pdo->prepare($wrongQuery);
+                normalizeVerbFlag($targetWord);
+                $wrongStmt = $pdo->prepare("SELECT DISTINCT Übersetzung FROM meine_wortschatz WHERE Übersetzung IS NOT NULL AND Übersetzung != '' AND Übersetzung != ? ORDER BY RAND() LIMIT 3");
                 $wrongStmt->execute([$targetWord['Übersetzung']]);
                 $wrongTrans = $wrongStmt->fetchAll(PDO::FETCH_COLUMN);
 
@@ -1169,83 +974,33 @@ if (isset($_GET['api'])) {
         $specificWord = trim($input['specific_word'] ?? '');
 
         if (!empty($specificWord)) {
-            $stmt = $pdo->prepare("SELECT sharepoint_list, Thema, Wortarten, Wort, Artikel, Plural, Score, Status, Created, Modified, NachsteUbungDatum, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Übersetzung, synonym, Beispiel FROM meine_wortschatz WHERE Wort = ? LIMIT 1");
+            $stmt = $pdo->prepare("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE Wort = ? LIMIT 1");
             $stmt->execute([$specificWord]);
             $word = $stmt->fetch(PDO::FETCH_ASSOC);
             $notice = "Spezifisches Wort wird geübt: '$specificWord'";
 
             if (!$word) {
                 $notice = "Spezifisches Wort nicht gefunden. Stattdessen wird ein zufälliges Wort angezeigt.";
-                $fallback = $pdo->query("SELECT * FROM (SELECT sharepoint_list, Thema, Wortarten, Wort, Artikel, Plural, Score, Status, Created, Modified, NachsteUbungDatum, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Übersetzung, synonym, Beispiel FROM meine_wortschatz ORDER BY NachsteUbungDatum ASC, Created ASC LIMIT 1000) AS subset ORDER BY RAND() LIMIT 1");
+                $fallback = $pdo->query("SELECT * FROM (SELECT " . WORD_COLS . " FROM meine_wortschatz ORDER BY NachsteUbungDatum ASC, Created ASC LIMIT 1000) AS subset ORDER BY RAND() LIMIT 1");
                 $word = $fallback->fetch(PDO::FETCH_ASSOC);
             }
 
             if ($word) {
-                $word['VerbFlag'] = isset($word['VerbFlag']) && (int)$word['VerbFlag'] === 1 ? 1 : 0;
+                normalizeVerbFlag($word);
             }
 
             echo json_encode(['mode' => 'standard', 'word' => $word, 'notice' => $notice]);
             exit;
         }
 
-        $selectedLists = $input['sharepoint_lists'] ?? [];
-        $selectedThemen = $input['themen'] ?? [];
-        $categories = $input['categories'] ?? [];
+        [$filterWhere, $params] = buildGameFilter($input, true);
+        $query = "SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE 1=1" . $filterWhere;
 
-        $query = "SELECT sharepoint_list, Thema, Wortarten, Wort, Artikel, Plural, Score, Status, Created, Modified, NachsteUbungDatum, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Übersetzung, synonym, Beispiel FROM meine_wortschatz WHERE 1=1";
-        $params = [];
+        $hasFilters = !empty($input['statuses']) || !empty($input['sharepoint_lists']) || !empty($input['themen']) || !empty($input['categories']);
 
-        if (!empty($selectedThemen)) {
-            $query .= " AND Thema IS NOT NULL AND Thema != ''";
-        }
-        if (!empty($selectedStatuses)) {
-            $placeholders = implode(',', array_fill(0, count($selectedStatuses), '?'));
-            $query .= " AND Status IN ($placeholders)";
-            foreach ($selectedStatuses as $st) $params[] = $st;
-        }
-        if (!empty($selectedLists)) {
-            $placeholders = implode(',', array_fill(0, count($selectedLists), '?'));
-            $query .= " AND sharepoint_list IN ($placeholders)";
-            foreach ($selectedLists as $lst) $params[] = $lst;
-        }
-        if (!empty($selectedThemen)) {
-            $placeholders = implode(',', array_fill(0, count($selectedThemen), '?'));
-            $query .= " AND Thema IN ($placeholders)";
-            foreach ($selectedThemen as $thm) $params[] = $thm;
-        }
-        if (!empty($categories)) {
-            $placeholders = implode(',', array_fill(0, count($categories), '?'));
-            $query .= " AND Wortarten IN ($placeholders)";
-            foreach ($categories as $cat) $params[] = $cat;
-        }
-
-        $hasFilters = !empty($selectedStatuses) || !empty($selectedLists) || !empty($selectedThemen) || !empty($categories);
-        
         if ($hasFilters) {
-            $countQuery = "SELECT COUNT(*) FROM meine_wortschatz WHERE 1=1";
-            if (!empty($selectedThemen)) {
-                $countQuery .= " AND Thema IS NOT NULL AND Thema != ''";
-            }
-            $countParams = [];
-            if (!empty($selectedStatuses)) {
-                $countQuery .= " AND Status IN (" . implode(',', array_fill(0, count($selectedStatuses), '?')) . ")";
-                foreach ($selectedStatuses as $st) $countParams[] = $st;
-            }
-            if (!empty($selectedLists)) {
-                $countQuery .= " AND sharepoint_list IN (" . implode(',', array_fill(0, count($selectedLists), '?')) . ")";
-                foreach ($selectedLists as $lst) $countParams[] = $lst;
-            }
-            if (!empty($selectedThemen)) {
-                $countQuery .= " AND Thema IN (" . implode(',', array_fill(0, count($selectedThemen), '?')) . ")";
-                foreach ($selectedThemen as $thm) $countParams[] = $thm;
-            }
-            if (!empty($categories)) {
-                $countQuery .= " AND Wortarten IN (" . implode(',', array_fill(0, count($categories), '?')) . ")";
-                foreach ($categories as $cat) $countParams[] = $cat;
-            }
-            
-            $countStmt = $pdo->prepare($countQuery);
-            $countStmt->execute($countParams);
+            $countStmt = $pdo->prepare("SELECT COUNT(*) FROM meine_wortschatz WHERE 1=1" . $filterWhere);
+            $countStmt->execute($params);
             $totalMatches = (int)$countStmt->fetchColumn();
 
             $dynamicLimit = max(1, (int)floor($totalMatches / 2));
@@ -1261,13 +1016,13 @@ if (isset($_GET['api'])) {
         $notice = '';
 
         if (!$word) {
-            $fallback = $pdo->query("SELECT * FROM (SELECT sharepoint_list, Thema, Wortarten, Wort, Artikel, Plural, Score, Status, Created, Modified, NachsteUbungDatum, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Übersetzung, synonym, Beispiel FROM meine_wortschatz ORDER BY NachsteUbungDatum ASC, Created ASC LIMIT 1000) AS subset ORDER BY RAND() LIMIT 1");
+            $fallback = $pdo->query("SELECT * FROM (SELECT " . WORD_COLS . " FROM meine_wortschatz ORDER BY NachsteUbungDatum ASC, Created ASC LIMIT 1000) AS subset ORDER BY RAND() LIMIT 1");
             $word = $fallback->fetch(PDO::FETCH_ASSOC);
             $notice = "Keine Wörter gefunden, die den genauen Filtern entsprechen. Stattdessen wird ein zufälliges Wort aus der Warteschlange angezeigt.";
         }
 
         if ($word) {
-            $word['VerbFlag'] = isset($word['VerbFlag']) && (int)$word['VerbFlag'] === 1 ? 1 : 0;
+            normalizeVerbFlag($word);
         }
 
         echo json_encode(['mode' => 'standard', 'word' => $word, 'notice' => $notice]);
@@ -1275,7 +1030,7 @@ if (isset($_GET['api'])) {
     }
 
     if ($action === 'game_answer') {
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = jsonInput();
         $wort = $input['wort'] ?? '';
         $result = $input['result'] ?? '';
 
@@ -1294,19 +1049,17 @@ if (isset($_GET['api'])) {
                     $newScore = $currentScore + 1;
                 } elseif ($result === 'wiederholen') {
                     $newScore = max(0, $currentScore - 1);
-                } elseif ($result === 'passiv') {
-                    $newScore = $currentScore;
                 } else {
                     $newScore = $currentScore;
                 }
 
                 $newStatus = ($result === 'passiv') ? 'passiv' : (($result === 'warteschlange') ? 'warteschlange' : (($newScore >= 10) ? 'aktiva' : 'wiederholen'));
-                
+
                 $newAddDatum = ($newStatus === 'aktiva') ? ($newScore * 10) : max(1, $newScore * 3);
 
                 if ($result === 'wiederholen' && strtolower($currentStatus) !== 'wiederholen') {
                     $newScore = 1;
-                    $newAddDatum = ($newStatus === 'aktiva') ? ($newScore * 10) : 3;
+                    $newAddDatum = 3;
                     $newStatus = 'wiederholen';
                 }
 
@@ -1319,7 +1072,7 @@ if (isset($_GET['api'])) {
     }
 
     if ($action === 'suggest_sentence') {
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = jsonInput();
         $word = trim($input['word'] ?? '');
 
         if (empty($word)) {
@@ -1327,62 +1080,18 @@ if (isset($_GET['api'])) {
             exit;
         }
 
-        $userPrompt = "Schreibe einen natürlichen Beispielsatz auf Deutsch für das Wort '$word' und erkläre kurz die Bedeutung auf Deutsch.";
-
-        $curl = curl_init();
-        curl_setopt_array($curl, [
-            CURLOPT_URL => "https://deepseek-v31.p.rapidapi.com/",
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_ENCODING => "",
-            CURLOPT_MAXREDIRS => 10,
-            CURLOPT_TIMEOUT => 30,
-            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-            CURLOPT_CUSTOMREQUEST => "POST",
-            CURLOPT_POSTFIELDS => json_encode([
-                'model' => 'DeepSeek-V3.2',
-                'messages' => [
-                    [
-                        'role' => 'user',
-                        'content' => $userPrompt
-                    ]
-                ]
-            ]),
-            CURLOPT_HTTPHEADER => [
-                "Content-Type: application/json",
-                "x-rapidapi-host: deepseek-v31.p.rapidapi.com",
-                "x-rapidapi-key: 447ab2c8bbmshf4a7532617c3948p1602eejsnd20917218f6c"
-            ],
-        ]);
-        $response = curl_exec($curl);
-        $err = curl_error($curl);
-        curl_close($curl);
-
-        if ($err) {
-            echo json_encode(['success' => false, 'error' => "cURL Fehler #: " . $err]);
+        $ai = callDeepSeek("Schreibe einen natürlichen Beispielsatz auf Deutsch für das Wort '$word' und erkläre kurz die Bedeutung auf Deutsch.");
+        if (!$ai['ok']) {
+            echo json_encode(['success' => false, 'error' => $ai['error']]);
             exit;
         }
 
-        $data = json_decode($response, true);
-        
-        $suggestion = '';
-        if (isset($data['choices'][0]['message']['content'])) {
-            $suggestion = $data['choices'][0]['message']['content'];
-        } elseif (isset($data['choices'][0]['text'])) {
-            $suggestion = $data['choices'][0]['text'];
-        } elseif (isset($data['content'])) {
-            $suggestion = $data['content'];
-        } elseif (is_string($response) && !empty(trim($response))) {
-            $suggestion = $response;
-        } else {
-            $suggestion = json_encode($data);
-        }
-
-        echo json_encode(['success' => true, 'suggestion' => trim($suggestion)]);
+        echo json_encode(['success' => true, 'suggestion' => $ai['content']]);
         exit;
     }
 
     if ($action === 'check_sentence') {
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = jsonInput();
         $sentence = trim($input['sentence'] ?? '');
         $word = trim($input['word'] ?? '');
 
@@ -1391,61 +1100,21 @@ if (isset($_GET['api'])) {
             exit;
         }
 
-        $userPrompt = "Überprüfe, ob das Wort '$word' im folgenden Satz korrekt und natürlich verwendet wurde. " .
-                    "Korrigiere den Satz falls nötig und erkläre kurz die Bedeutung von '$word' im Kontext: " . 
-                    "'$sentence'";
-
-        $curl = curl_init();
-        curl_setopt_array($curl, [
-            CURLOPT_URL => "https://deepseek-v31.p.rapidapi.com/",
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_ENCODING => "",
-            CURLOPT_MAXREDIRS => 10,
-            CURLOPT_TIMEOUT => 30,
-            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-            CURLOPT_CUSTOMREQUEST => "POST",
-            CURLOPT_POSTFIELDS => json_encode([
-                'model' => 'DeepSeek-V3.2',
-                'messages' => [
-                    [
-                        'role' => 'user',
-                        'content' => $userPrompt
-                    ]
-                ]
-            ]),
-            CURLOPT_HTTPHEADER => [
-                "Content-Type: application/json",
-                "x-rapidapi-host: deepseek-v31.p.rapidapi.com",
-                "x-rapidapi-key: 447ab2c8bbmshf4a7532617c3948p1602eejsnd20917218f6c"
-            ],
-        ]);
-        $response = curl_exec($curl);
-        $err = curl_error($curl);
-        curl_close($curl);
-
-        if ($err) {
-            echo json_encode(['success' => false, 'error' => "cURL Fehler #: " . $err]);
+        $ai = callDeepSeek("Überprüfe, ob das Wort '$word' im folgenden Satz korrekt und natürlich verwendet wurde. " .
+                    "Korrigiere den Satz falls nötig und erkläre kurz die Bedeutung von '$word' im Kontext: " .
+                    "'$sentence'");
+        if (!$ai['ok']) {
+            echo json_encode(['success' => false, 'error' => $ai['error']]);
             exit;
         }
 
-        $data = json_decode($response, true);
-        
-        $correction = '';
-        if (isset($data['choices'][0]['message']['content'])) {
-            $correction = $data['choices'][0]['message']['content'];
-        } elseif (isset($data['choices'][0]['text'])) {
-            $correction = $data['choices'][0]['text'];
-        } elseif (isset($data['content'])) {
-            $correction = $data['content'];
-        } elseif (is_string($response) && !empty(trim($response))) {
-            $correction = $response;
-        } else {
-            $correction = json_encode($data);
-        }
-
-        echo json_encode(['success' => true, 'correction' => trim($correction)]);
+        echo json_encode(['success' => true, 'correction' => $ai['content']]);
         exit;
     }
+
+    // Unknown action
+    echo json_encode(['success' => false, 'error' => 'Unbekannte Aktion.']);
+    exit;
 }
 
 // Ensure login check for page render
@@ -1462,9 +1131,9 @@ try {
 }
 
 try {
-    $initialWords = $pdo->query("SELECT sharepoint_list, Thema, Wortarten, Wort, Artikel, Plural, Score, Status, Created, Modified, NachsteUbungDatum, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Übersetzung, synonym, Beispiel FROM meine_wortschatz ORDER BY Wort ASC LIMIT 50")->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    $initialWords = $pdo->query("SELECT " . WORD_COLS . " FROM meine_wortschatz ORDER BY Wort ASC LIMIT 50")->fetchAll(PDO::FETCH_ASSOC) ?: [];
     foreach ($initialWords as &$w) {
-        $w['VerbFlag'] = isset($w['VerbFlag']) && (int)$w['VerbFlag'] === 1 ? 1 : 0;
+        normalizeVerbFlag($w);
     }
     unset($w);
 
@@ -1474,7 +1143,7 @@ try {
     $initialScores = $pdo->query("SELECT DISTINCT Score FROM meine_wortschatz WHERE Score IS NOT NULL ORDER BY Score ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
     $initialGrundverben = $pdo->query("SELECT DISTINCT grundverb FROM meine_wortschatz WHERE grundverb IS NOT NULL AND grundverb != '' ORDER BY grundverb ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
     $initialPraefixe = $pdo->query("SELECT DISTINCT praefix FROM meine_wortschatz WHERE praefix IS NOT NULL AND praefix != '' ORDER BY praefix ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
-    
+
     $initialStatusesStmt = $pdo->query("SELECT DISTINCT Status FROM meine_wortschatz WHERE Status IS NOT NULL AND Status != '' ORDER BY FIELD(Status, 'aktiva', 'wiederholen', 'neu', 'passiv', 'warteschlange')");
     $initialStatuses = $initialStatusesStmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
 
@@ -1492,6 +1161,7 @@ try {
         }
     }
 } catch (Exception $e) {
+    error_log($e->getMessage());
     $initialWords = [];
     $initialLists = [];
     $initialThemen = [];
@@ -1509,29 +1179,29 @@ try {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mein Wortschatz - SPA</title>
-    
+
     <meta name="theme-color" content="#1e88e5">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Mein Wortschatz">
 
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📚</text></svg>">
-    
+
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
     <style>
         :root {
-            --md-primary: #1e88e5; 
+            --md-primary: #1e88e5;
             --md-primary-dark: #1565c0;
             --md-primary-light: #0d233a;
-            --md-bg: #121212; 
+            --md-bg: #121212;
             --md-surface: #1e1e1e;
             --md-surface-card: #252525;
-            --md-on-surface: #e0e0e0; 
+            --md-on-surface: #e0e0e0;
             --md-text-muted: #a0a0a0;
-            --md-border: #333333; 
+            --md-border: #333333;
             --md-danger: #e53935;
-            --md-danger-dark: #c62828; 
+            --md-danger-dark: #c62828;
             --md-passiv-grey: #9e9e9e;
             --md-passiv-grey-dark: #757575;
             --md-success: #26a69a;
@@ -1549,7 +1219,7 @@ try {
             margin: 0; padding: 0; -webkit-text-size-adjust: 100%;
         }
         .container { max-width: 1750px; margin: 0 auto; padding: 24px 16px; }
-        
+
         header {
             display: flex; justify-content: space-between; align-items: center;
             background: var(--md-surface); padding: 16px 24px; border-radius: 12px;
@@ -1559,7 +1229,7 @@ try {
         .header-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
         h1 { font-size: 1.5rem; font-weight: 500; margin: 0; color: #90caf9; display: flex; align-items: center; gap: 8px; }
         h2 { font-size: 1.15rem; font-weight: 500; margin: 0 0 1rem 0; color: var(--md-on-surface); }
-        
+
         .daily-tracker {
             background: var(--md-surface-card); border: 1px solid var(--md-border);
             border-radius: 8px; padding: 12px 18px; margin-bottom: 1.5rem;
@@ -1582,7 +1252,7 @@ try {
             border-radius: 8px; margin-bottom: 1rem; border: 1px solid #1565c0; font-size: 0.9rem;
             box-shadow: var(--md-elevation-1);
         }
-        
+
         .card {
             background: var(--md-surface); border: 1px solid var(--md-border);
             border-radius: 12px; padding: 24px; box-shadow: var(--md-elevation-1);
@@ -1650,7 +1320,7 @@ try {
         th, td { padding: 14px 10px; border-bottom: 1px solid var(--md-border); vertical-align: top; word-wrap: break-word; }
         th { background-color: #242424; font-weight: 600; white-space: nowrap; cursor: pointer; color: var(--md-on-surface); position: sticky; top: 0; z-index: 10; }
         th a { color: var(--md-on-surface); text-decoration: none; display: flex; align-items: center; gap: 4px; }
-        
+
         th:nth-child(1), td:nth-child(1) { width: 5%; }
         th:nth-child(2), td:nth-child(2) { width: 11%; }
         th:nth-child(3), td:nth-child(3) { width: 7%; }
@@ -1677,7 +1347,7 @@ try {
         .form-toggle-bar { margin-bottom: 1.2rem; }
 
         .game-container { max-width: 800px; margin: 0 auto; }
-        
+
         /* --- SETTINGS FORM STYLES --- */
         .settings-fieldset {
             background: var(--md-surface-card);
@@ -1781,16 +1451,16 @@ try {
         #gameCategoryCheckboxes {
             max-height: 200px;
         }
-        .checkbox-label { 
-            display: flex; 
-            align-items: center; 
-            justify-content: flex-start; 
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
             text-align: left;
-            gap: 12px; 
-            font-weight: 400; 
-            font-size: 0.95rem; 
-            cursor: pointer; 
-            color: var(--md-on-surface); 
+            gap: 12px;
+            font-weight: 400;
+            font-size: 0.95rem;
+            cursor: pointer;
+            color: var(--md-on-surface);
             padding: 6px 4px;
             border-radius: 6px;
             transition: background 0.15s;
@@ -1798,12 +1468,12 @@ try {
         .checkbox-label:hover {
             background: rgba(255,255,255,0.03);
         }
-        .checkbox-label input[type="checkbox"] { 
-            margin: 0; 
-            width: 22px; 
-            height: 22px; 
+        .checkbox-label input[type="checkbox"] {
+            margin: 0;
+            width: 22px;
+            height: 22px;
             accent-color: var(--md-primary);
-            flex-shrink: 0; 
+            flex-shrink: 0;
             cursor: pointer;
         }
 
@@ -2109,7 +1779,7 @@ try {
 
         <div class="card">
             <h2>Wortschatz-Datenbank</h2>
-            
+
             <div class="alphabet-bar" id="alphabetBar">
                 <button type="button" class="alphabet-btn active" onclick="setLetterFilter('')">Alle</button>
                 <button type="button" class="alphabet-btn" onclick="setLetterFilter('A')">A</button>
@@ -2227,17 +1897,18 @@ try {
                         <?php if (empty($initialWords)): ?>
                             <tr><td colspan="9" style="text-align: center; color: var(--md-text-muted); padding: 2rem;">Keine Vokabeln gefunden.</td></tr>
                         <?php else: ?>
-                            <?php foreach ($initialWords as $row): 
+                            <?php foreach ($initialWords as $row):
                                 $artClass = '';
                                 $artLower = strtolower(trim($row['Artikel'] ?? ''));
                                 if ($artLower === 'der') $artClass = 'wort-der';
                                 elseif ($artLower === 'die') $artClass = 'wort-die';
                                 elseif ($artLower === 'das') $artClass = 'wort-das';
                                 else $artClass = 'wort-other';
-                                
+
                                 $googleQueryUrl = 'https://www.google.ch/search?q=' . urlencode($row['Wort'] ?? '');
                                 $translateUrl = 'https://translate.google.com/?sl=de&tl=fr&text=' . urlencode($row['Wort'] ?? '') . '&op=translate';
                                 $isVerb = (isset($row['VerbFlag']) && (int)$row['VerbFlag'] === 1);
+                                $wortArg = jsArg($row['Wort'] ?? '');
                             ?>
                                 <tr>
                                     <td data-label="Artikel"><strong><?= htmlspecialchars($row['Artikel'] ?? '') ?></strong></td>
@@ -2249,26 +1920,26 @@ try {
                                     </td>
                                     <td data-label="Werkzeuge">
                                         <div style="display: flex; gap: 4px; flex-wrap: wrap;">
-                                            <a href="<?= $googleQueryUrl ?>" target="_blank" class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.78rem;">🔍 Google</a>
-                                            <a href="<?= $translateUrl ?>" target="_blank" class="btn btn-info" style="padding: 4px 8px; font-size: 0.78rem;">🌐 Übersetzung</a>
+                                            <a href="<?= htmlspecialchars($googleQueryUrl) ?>" target="_blank" rel="noopener noreferrer" class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.78rem;">🔍 Google</a>
+                                            <a href="<?= htmlspecialchars($translateUrl) ?>" target="_blank" rel="noopener noreferrer" class="btn btn-info" style="padding: 4px 8px; font-size: 0.78rem;">🌐 Übersetzung</a>
                                             <?php if ($isVerb): ?>
-                                                <a href="https://www.verbformen.de/konjugation/<?= urlencode($row['Wort'] ?? '') ?>.htm" target="_blank" class="btn" style="padding: 4px 8px; font-size: 0.78rem; background-color: #6a1b9a;">📖 Konjugation</a>
+                                                <a href="https://www.verbformen.de/konjugation/<?= urlencode($row['Wort'] ?? '') ?>.htm" target="_blank" rel="noopener noreferrer" class="btn" style="padding: 4px 8px; font-size: 0.78rem; background-color: #6a1b9a;">📖 Konjugation</a>
                                             <?php endif; ?>
                                         </div>
                                     </td>
                                     <td data-label="Score"><?= htmlspecialchars($row['Score'] ?? 0) ?></td>
                                     <td class="kenntnisse-cell" data-label="Kenntnisse">
-                                        <button onclick="inlineRateWord('<?= htmlspecialchars($row['Wort'], ENT_QUOTES) ?>', 'sehr_gut')" class="btn btn-aktiva" style="padding: 8px 12px; font-size: 0.85rem;" title="sehr gut">sehr gut</button>
-                                        <button onclick="inlineRateWord('<?= htmlspecialchars($row['Wort'], ENT_QUOTES) ?>', 'yes')" class="btn btn-success" style="padding: 8px 12px; font-size: 0.85rem;" title="ja">ja</button>
-                                        <button onclick="inlineRateWord('<?= htmlspecialchars($row['Wort'], ENT_QUOTES) ?>', 'wiederholen')" class="btn" style="padding: 8px 12px; font-size: 0.85rem; background-color: var(--md-primary);" title="wiederholen">wiederholen</button>
-                                        <button onclick="inlineRateWord('<?= htmlspecialchars($row['Wort'], ENT_QUOTES) ?>', 'passiv')" class="btn btn-passiv" style="padding: 8px 12px; font-size: 0.85rem;" title="passiv">passiv</button>
-                                        <button onclick="inlineRateWord('<?= htmlspecialchars($row['Wort'], ENT_QUOTES) ?>', 'warteschlange')" class="btn" style="padding: 8px 12px; font-size: 0.85rem; background-color: #424242;" title="warteschlange">warteschlange</button>
+                                        <button onclick="inlineRateWord(<?= $wortArg ?>, 'sehr_gut')" class="btn btn-aktiva" style="padding: 8px 12px; font-size: 0.85rem;" title="sehr gut">sehr gut</button>
+                                        <button onclick="inlineRateWord(<?= $wortArg ?>, 'yes')" class="btn btn-success" style="padding: 8px 12px; font-size: 0.85rem;" title="ja">ja</button>
+                                        <button onclick="inlineRateWord(<?= $wortArg ?>, 'wiederholen')" class="btn" style="padding: 8px 12px; font-size: 0.85rem; background-color: var(--md-primary);" title="wiederholen">wiederholen</button>
+                                        <button onclick="inlineRateWord(<?= $wortArg ?>, 'passiv')" class="btn btn-passiv" style="padding: 8px 12px; font-size: 0.85rem;" title="passiv">passiv</button>
+                                        <button onclick="inlineRateWord(<?= $wortArg ?>, 'warteschlange')" class="btn" style="padding: 8px 12px; font-size: 0.85rem; background-color: #424242;" title="warteschlange">warteschlange</button>
                                     </td>
                                     <td data-label="Status" class="status-cell"><?= htmlspecialchars($row['Status'] ?? '') ?></td>
                                     <td class="aktion-cell" data-label="Aktion">
                                         <button onclick="editWord(<?= htmlspecialchars(json_encode($row), ENT_QUOTES, 'UTF-8') ?>)" class="btn" style="padding: 6px 10px; font-size: 0.75rem;" title="Bearbeiten">Bearbeiten</button>
-                                        <button onclick="trainSpecificWord('<?= htmlspecialchars($row['Wort'], ENT_QUOTES) ?>')" class="btn btn-success" style="padding: 6px 10px; font-size: 0.75rem;" title="Üben">Üben</button>
-                                        <button onclick="deleteWord('<?= htmlspecialchars($row['Wort'], ENT_QUOTES) ?>')" class="btn btn-danger" style="padding: 6px 10px; font-size: 0.75rem;" title="Löschen">Löschen</button>
+                                        <button onclick="trainSpecificWord(<?= $wortArg ?>)" class="btn btn-success" style="padding: 6px 10px; font-size: 0.75rem;" title="Üben">Üben</button>
+                                        <button onclick="deleteWord(<?= $wortArg ?>)" class="btn btn-danger" style="padding: 6px 10px; font-size: 0.75rem;" title="Löschen">Löschen</button>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
@@ -2382,7 +2053,7 @@ try {
 
             <div id="gamePlayCard" style="display: none;">
                 <div id="gameNotice" style="background:#332701; color:#ffecb3; padding:12px; border-radius:8px; margin-bottom:1rem; font-size:0.85rem; border:1px solid #795548; display:none;"></div>
-                
+
                 <div class="card">
                     <div style="display: flex; justify-content: space-between; align-items:center; font-size: 0.85rem; color: var(--md-text-muted); flex-wrap: wrap; gap: 6px;">
                         <span id="gameMetaInfo"></span>
@@ -2406,17 +2077,17 @@ try {
 
                     <div id="detailsBox" class="details-box" style="display: none;">
                         <p><strong>Übersetzung:</strong> <span id="gTrans" style="color: #90caf9; font-size: 1.1rem;"></span></p>
-                        
+
                         <div id="imageDisplayContainer" style="margin: 12px 0; text-align: center;">
                             <img id="generatedImageTag" src="" alt="Wort Bild" onclick="openFullscreenImage(this.src)" style="max-width: 100%; max-height: 300px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); display: none; margin: 0 auto 10px auto;" title="Zum Vergrößern anklicken">
                             <button type="button" class="btn btn-info" onclick="generateAiImageForCurrentWord()" id="generateImageBtn" style="font-size: 0.8rem; padding: 6px 12px;">🤖 Bild generieren</button>
                         </div>
 
                         <p><strong>Synonym:</strong> <span id="gSyn" style="color: #90caf9; font-size: 1.0rem;"></span></p>
-                        <p><strong>Externe Werkzeuge:</strong> 
-                            <a id="gSearchLink" href="#" target="_blank" class="btn btn-secondary" style="padding: 2px 8px; font-size: 0.8rem; margin-left: 4px;">🔍 Google</a>
-                            <a id="gTranslateLink" href="#" target="_blank" class="btn btn-info" style="padding: 2px 8px; font-size: 0.8rem; margin-left: 4px;">🌐 Übersetzung</a>
-                            <a id="gVerbLink" href="#" target="_blank" class="btn" style="padding: 2px 8px; font-size: 0.8rem; margin-left: 4px; background-color: #6a1b9a; display:none;">📖 Konjugation</a>
+                        <p><strong>Externe Werkzeuge:</strong>
+                            <a id="gSearchLink" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-secondary" style="padding: 2px 8px; font-size: 0.8rem; margin-left: 4px;">🔍 Google</a>
+                            <a id="gTranslateLink" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-info" style="padding: 2px 8px; font-size: 0.8rem; margin-left: 4px;">🌐 Übersetzung</a>
+                            <a id="gVerbLink" href="#" target="_blank" rel="noopener noreferrer" class="btn" style="padding: 2px 8px; font-size: 0.8rem; margin-left: 4px; background-color: #6a1b9a; display:none;">📖 Konjugation</a>
                         </p>
                         <p><strong>Thema:</strong> <span id="gThema"></span></p>
                         <p><strong>Artikel:</strong> <span id="gArt"></span></p>
@@ -2440,7 +2111,7 @@ try {
 
                         <div>
                             <button type="button" class="btn btn-secondary" onclick="toggleSentenceWriter()" id="toggleSentenceWriterBtn" style="width: 100%; margin-bottom: 8px;">✍️ Satz schreiben</button>
-                            
+
                             <div id="sentenceWriterContainer" style="display: none; margin-top: 8px;">
                                 <label for="userSentenceInput" style="font-size: 0.9rem; font-weight: 500; margin-bottom: 6px;">Schreibe einen Satz mit diesem Wort:</label>
                                 <textarea id="userSentenceInput" rows="2" placeholder="z.B. Ich benutze dieses Wort..." style="width: 100%; max-width: 100%; margin-bottom: 8px; resize: vertical;"></textarea>
@@ -2495,7 +2166,7 @@ try {
                     <div id="dmResultContainer" style="display: none; background: var(--md-surface); border: 1px solid var(--md-border); padding: 16px; border-radius: 8px; margin-bottom: 1.5rem;">
                         <div id="dmEvaluationBadge" style="font-size: 1.1rem; font-weight: 600; margin-bottom: 10px;"></div>
                         <div id="dmFeedbackText" style="font-size: 0.95rem; margin-bottom: 15px; white-space: pre-wrap; line-height: 1.5;"></div>
-                        
+
                         <div id="dmHiddenDetails" style="border-top: 1px solid var(--md-border); padding-top: 12px; display: none;">
                             <h3 style="color: #90caf9; margin-top: 0; font-size: 1rem;">📚 Auflösung & Übersetzung</h3>
                             <p><strong>Wort:</strong> <span id="dmResWord"></span></p>
@@ -2539,11 +2210,11 @@ try {
 
                     <div id="dddFeedbackContainer" style="display: none; background: var(--md-surface); border: 1px solid var(--md-border); padding: 16px; border-radius: 8px; margin-bottom: 1.5rem; text-align: center;">
                         <div id="dddFeedbackText" style="font-size: 1.1rem; font-weight: 600; margin-bottom: 12px;"></div>
-                        
+
                         <div id="dddExtraActionSection" style="display: none; margin-top: 12px; border-top: 1px solid var(--md-border); padding-top: 12px;">
                             <button type="button" class="btn btn-secondary" onclick="loadNextDerDieDasWord()" style="width: 100%; margin-bottom: 8px;">Nächstes Wort laden ➡️</button>
                             <button type="button" class="btn btn-info" onclick="toggleDddSentenceWriter()" id="dddToggleSentenceBtn" style="width: 100%; margin-bottom: 8px;">✍️ Satz schreiben (Bonus Punkte)</button>
-                            
+
                             <div id="dddSentenceWriterBox" style="display: none; margin-top: 8px; text-align: left;">
                                 <label for="dddUserSentence" style="font-size: 0.9rem; font-weight: 500; margin-bottom: 6px;">Schreibe einen Satz mit diesem Wort:</label>
                                 <textarea id="dddUserSentence" rows="2" placeholder="Dein Satz hier..." style="width: 100%; margin-bottom: 8px; resize: vertical;"></textarea>
@@ -2609,7 +2280,7 @@ try {
                 <div class="card">
                     <h2 style="text-align: center;">🎯 Blitz-Übersetzungs-Quiz</h2>
                     <p style="text-align: center; color: var(--md-text-muted); font-size: 0.9rem; margin-bottom: 0.5rem;">Schnell! Wähle die korrekte Übersetzung aus!</p>
-                    
+
                     <div class="timer-bar-container">
                         <div class="timer-bar-fill" id="quizTimerFill"></div>
                     </div>
@@ -2724,17 +2395,17 @@ let quizTimeLeft = 45;
 let quizStartTime = 0;
 const quizTotalTime = 45;
 
-let masterWordsList = <?= json_encode($initialWords) ?>;
-let cachedLists = <?= json_encode($initialLists) ?>;
-let cachedThemen = <?= json_encode($initialThemen) ?>;
-let cachedWortarten = <?= json_encode($initialWortarten) ?>;
-let cachedScores = <?= json_encode($initialScores) ?>;
-let cachedGrundverben = <?= json_encode($initialGrundverben) ?>;
-let cachedPraefixe = <?= json_encode($initialPraefixe) ?>;
-let cachedStatuses = <?= json_encode($initialStatuses) ?>;
-let cachedThemaWortartenMap = <?= json_encode($initialThemaWortartenMap) ?>;
+let masterWordsList = <?= jsonForScript($initialWords) ?>;
+let cachedLists = <?= jsonForScript($initialLists) ?>;
+let cachedThemen = <?= jsonForScript($initialThemen) ?>;
+let cachedWortarten = <?= jsonForScript($initialWortarten) ?>;
+let cachedScores = <?= jsonForScript($initialScores) ?>;
+let cachedGrundverben = <?= jsonForScript($initialGrundverben) ?>;
+let cachedPraefixe = <?= jsonForScript($initialPraefixe) ?>;
+let cachedStatuses = <?= jsonForScript($initialStatuses) ?>;
+let cachedThemaWortartenMap = <?= jsonForScript($initialThemaWortartenMap) ?>;
 
-let todayReviewedCount = <?= $todayReviewedCount ?>;
+let todayReviewedCount = <?= (int)$todayReviewedCount ?>;
 let lastPopupWordObject = null;
 const dailyTarget = 100;
 
@@ -2840,8 +2511,8 @@ async function checkAndLoadImageForCurrentWord() {
 
     try {
         const checkRes = await fetch(imageUrl, { cache: 'no-store' });
-        if (checkRes.status === 204 || checkRes.status === 404) {
-            return; 
+        if (checkRes.status === 204 || checkRes.status === 404 || checkRes.status === 401) {
+            return;
         }
 
         imgTag.onload = () => {
@@ -2893,7 +2564,7 @@ async function fillWordWithAI() {
 
             if (ai.thema) document.getElementById('Thema').value = ai.thema;
             if (ai.kategorie) document.getElementById('Wortarten').value = ai.kategorie;
-            
+
             const isVerb = ai.ist_verb === true || String(ai.ist_verb).toLowerCase() === 'ja' || String(ai.ist_verb).toLowerCase() === 'true';
             document.getElementById('VerbFlag').value = isVerb ? '1' : '0';
             toggleVerbFields();
@@ -3151,12 +2822,12 @@ function renderStatistics(stats) {
 
     function getStatusColor(statusName) {
         const key = (statusName || '').toLowerCase().trim();
-        if (key === 'aktiva') return '#43a047';   
-        if (key === 'wiederholen') return '#1e88e5';  
-        if (key === 'neu') return '#4fc3f7';         
-        if (key === 'passiv') return '#9e9e9e';      
-        if (key === 'warteschlange') return '#424242'; 
-        return '#78909c';                 
+        if (key === 'aktiva') return '#43a047';
+        if (key === 'wiederholen') return '#1e88e5';
+        if (key === 'neu') return '#4fc3f7';
+        if (key === 'passiv') return '#9e9e9e';
+        if (key === 'warteschlange') return '#424242';
+        return '#78909c';
     }
 
     stats.forEach(row => {
@@ -3360,7 +3031,7 @@ function initGameInstantly() {
             document.getElementById('quizPlayCard').style.display = 'none';
             document.getElementById('deutschMeisterPlayCard').style.display = 'none';
             document.getElementById('derDieDasPlayCard').style.display = 'block';
-            
+
             dddStreakCount = 0;
             updateDddStreakUI();
         } else if (activeGameSettings.mode === 'deutsch_meister') {
@@ -3616,7 +3287,7 @@ async function checkDeutschMeisterSentence() {
 
             feedbackText.innerHTML = parseMarkdown(data.feedback);
 
-            const wDet = data.word_details;
+            const wDet = data.word_details || {};
             document.getElementById('dmResWord').textContent = wDet.Wort || '';
             document.getElementById('dmResArt').textContent = wDet.Artikel || 'Keiner';
             document.getElementById('dmResTrans').textContent = wDet.Übersetzung || '-';
@@ -3727,7 +3398,7 @@ function openEditFromDdd() {
 async function deleteWordFromDdd() {
     if (!currentDerDieDasWord) return;
     if (!confirm(`Wort '${currentDerDieDasWord.Wort}' wirklich löschen?`)) return;
-    
+
     const res = await fetch('index.php?api=delete&_ts=' + Date.now(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4046,7 +3717,7 @@ async function checkUserStoryWithAI() {
 
 async function rateWriterWord(wort, result, btnElement) {
     const parentContainer = btnElement.closest('.word-rating-item');
-    
+
     parentContainer.style.opacity = '0';
     parentContainer.style.transform = 'translateY(-10px)';
     setTimeout(() => {
@@ -4137,12 +3808,12 @@ function toggleStoryTransTable(btn) {
 
 async function rateWord(wort, result, btnElement) {
     const parentContainer = btnElement.closest('.word-rating-item');
-    
+
     parentContainer.style.opacity = '0';
     parentContainer.style.transform = 'translateY(-10px)';
     setTimeout(() => {
         parentContainer.remove();
-        
+
         const container = document.getElementById('wordsRatingContainer');
         if (container && container.children.length === 0) {
             document.getElementById('ratingHeaderTitle').style.display = 'none';
@@ -4225,7 +3896,7 @@ async function fetchNextGameWord() {
         }
 
         document.getElementById('gameMetaInfo').innerHTML = `Liste: <strong>${escapeHtml(currentGameWord.sharepoint_list || 'N/A')}</strong> | Thema: <strong>${escapeHtml(currentGameWord.Thema || 'N/A')}</strong> | Status: <strong>${escapeHtml(currentGameWord.Status)}</strong> | Score: <strong>${escapeHtml(currentGameWord.Score)}</strong>`;
-        
+
         const wordDisplay = document.getElementById('gameWordDisplay');
         wordDisplay.textContent = currentGameWord.Wort;
         wordDisplay.className = `word-display ${getArticleColorClass(currentGameWord.Artikel)}`;
@@ -4240,7 +3911,8 @@ async function fetchNextGameWord() {
 
         const praepDisplay = document.getElementById('gamePraepositionDisplay');
         if (currentGameWord.VerbFlag == 1 && currentGameWord.praeposition_kollokation) {
-            praepDisplay.innerHTML = `Kollokation: ${currentGameWord.praeposition_kollokation}`;
+            // escaped first, then **bold** is converted safely
+            praepDisplay.innerHTML = `Kollokation: ${parseMarkdown(currentGameWord.praeposition_kollokation)}`;
             praepDisplay.style.display = 'block';
         } else {
             praepDisplay.style.display = 'none';
@@ -4266,7 +3938,7 @@ async function fetchNextGameWord() {
         document.getElementById('gSyn').textContent = currentGameWord.synonym || '-';
         document.getElementById('gSearchLink').href = 'https://www.google.ch/search?q=' + encodeURIComponent(currentGameWord.Wort || '');
         document.getElementById('gTranslateLink').href = 'https://translate.google.com/?sl=de&tl=fr&text=' + encodeURIComponent(currentGameWord.Wort || '') + '&op=translate';
-        
+
         const verbLink = document.getElementById('gVerbLink');
         if (currentGameWord.VerbFlag == 1) {
             verbLink.href = 'https://www.verbformen.de/konjugation/' + encodeURIComponent(currentGameWord.Wort || '') + '.htm';
@@ -4635,9 +4307,9 @@ async function checkSentenceWithAI() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             cache: 'no-store',
-            body: JSON.stringify({ 
+            body: JSON.stringify({
                 sentence: sentence,
-                word: currentGameWord.Wort 
+                word: currentGameWord.Wort
             })
         });
         const data = await res.json();
@@ -4660,7 +4332,7 @@ async function checkSentenceWithAI() {
         resultBox.style.display = 'block';
     } finally {
         btn.disabled = false;
-        btn.textContent = 'Prüfen';
+        btn.textContent = 'Normal prüfen';
     }
 }
 
@@ -4733,7 +4405,7 @@ async function submitGameAnswer(result) {
         window.location.href = 'login.php';
         return;
     }
-    
+
     todayReviewedCount++;
     updateDailyTrackerUI();
 
@@ -4779,7 +4451,7 @@ function openEditFromGame() {
 async function deleteWordFromGame() {
     if (!currentGameWord) return;
     if (!confirm(`Wort '${currentGameWord.Wort}' wirklich löschen?`)) return;
-    
+
     const res = await fetch('index.php?api=delete&_ts=' + Date.now(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4875,7 +4547,7 @@ async function loadMoreDashboardData() {
 
 function renderTable(words) {
     const tbody = document.getElementById('wordTableBody');
-    
+
     if (words.length === 0) {
         tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--md-text-muted); padding: 2rem;">Keine Vokabeln gefunden.</td></tr>`;
         return;
@@ -4887,11 +4559,11 @@ function renderTable(words) {
         const googleUrl = 'https://www.google.ch/search?q=' + encodeURIComponent(row.Wort || '');
         const translateUrl = 'https://translate.google.com/?sl=de&tl=fr&text=' + encodeURIComponent(row.Wort || '') + '&op=translate';
         const isVerb = (row.VerbFlag == 1);
-        
+
         let verbButtonHtml = '';
         if (isVerb) {
             const verbformenUrl = 'https://www.verbformen.de/konjugation/' + encodeURIComponent(row.Wort || '') + '.htm';
-            verbButtonHtml = `<a href="${verbformenUrl}" target="_blank" class="btn" style="padding: 4px 8px; font-size: 0.78rem; background-color: #6a1b9a;">📖 Konjugation</a>`;
+            verbButtonHtml = `<a href="${verbformenUrl}" target="_blank" rel="noopener noreferrer" class="btn" style="padding: 4px 8px; font-size: 0.78rem; background-color: #6a1b9a;">📖 Konjugation</a>`;
         }
 
         const tr = document.createElement('tr');
@@ -4905,8 +4577,8 @@ function renderTable(words) {
             </td>
             <td data-label="Werkzeuge">
                 <div style="display: flex; gap: 4px; flex-wrap: wrap;">
-                    <a href="${googleUrl}" target="_blank" class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.78rem;">🔍 Google</a>
-                    <a href="${translateUrl}" target="_blank" class="btn btn-info" style="padding: 4px 8px; font-size: 0.78rem;">🌐 Übersetzung</a>
+                    <a href="${googleUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.78rem;">🔍 Google</a>
+                    <a href="${translateUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-info" style="padding: 4px 8px; font-size: 0.78rem;">🌐 Übersetzung</a>
                     ${verbButtonHtml}
                 </div>
             </td>
@@ -4970,7 +4642,7 @@ function toggleVerbFields() {
     const verbFieldsContainer = document.getElementById('verbFieldsContainer');
     const artikelGroup = document.getElementById('artikelGroup');
     const pluralGroup = document.getElementById('pluralGroup');
-    
+
     if (verbFlagSelect && verbFieldsContainer && artikelGroup && pluralGroup) {
         if (verbFlagSelect.value === '1') {
             verbFieldsContainer.style.display = 'block';
@@ -5006,10 +4678,10 @@ function editWord(row) {
     document.getElementById('Übersetzung').value = row.Übersetzung || '';
     document.getElementById('synonym').value = row.synonym || '';
     document.getElementById('Wortarten').value = row.Wortarten || '';
-    
+
     const isVerb = (row.VerbFlag == 1) ? '1' : '0';
     document.getElementById('VerbFlag').value = isVerb;
-    
+
     document.getElementById('Konjugation').value = row.Konjugation || '';
     document.getElementById('grundverb').value = row.grundverb || '';
     document.getElementById('praefix').value = row.praefix || '';
@@ -5109,13 +4781,18 @@ function showAlert(msg) {
 }
 
 function escapeHtml(str) {
-    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    return String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
+// Safe inside HTML attributes (onclick="...")
 function escapeAttr(str) {
-    return String(str).replace(/'/g, "&#39;").replace(/"/g, "&quot;");
+    return String(str ?? '').replace(/&/g, '&amp;').replace(/'/g, '&#39;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
+// Safe inside a JS string literal that sits inside an HTML attribute: uses \xNN / \uNNNN escapes only
 function escapeJs(str) {
-    return String(str).replace(/'/g, "\\'");
+    return String(str ?? '').replace(/[\\'"<>&\n\r\u2028\u2029]/g, c => {
+        const code = c.charCodeAt(0);
+        return code < 256 ? '\\x' + ('0' + code.toString(16)).slice(-2) : '\\u' + ('0000' + code.toString(16)).slice(-4);
+    });
 }
 </script>
 
