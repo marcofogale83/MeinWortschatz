@@ -47,6 +47,52 @@ function userQuery(PDO $pdo, string $sql, array $params = []): PDOStatement {
 
 const WORD_COLS = "sharepoint_list, Thema, Wortarten, Wort, Artikel, Plural, Score, Status, Created, Modified, NachsteUbungDatum, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Übersetzung, synonym, Beispiel";
 
+// --- SCORE → STATUS (single source of truth) ---
+// The status is never set by hand: it is always derived from the score.
+//   Score < -1  → warteschlange
+//   Score = -1  → passiv
+//   Score =  0  → neu
+//   Score 1..9  → wiederholen
+//   Score >= 10 → aktiva
+function statusFromScore(int $score): string {
+    if ($score < -1) return 'warteschlange';
+    if ($score === -1) return 'passiv';
+    if ($score === 0) return 'neu';
+    if ($score < 10) return 'wiederholen';
+    return 'aktiva';
+}
+
+// Same rule in SQL, used to bring existing rows in line with their score
+const STATUS_FROM_SCORE_SQL = "CASE WHEN COALESCE(Score, 0) < -1 THEN 'warteschlange' WHEN COALESCE(Score, 0) = -1 THEN 'passiv' WHEN COALESCE(Score, 0) = 0 THEN 'neu' WHEN COALESCE(Score, 0) < 10 THEN 'wiederholen' ELSE 'aktiva' END";
+
+function syncStatusesFromScore(PDO $pdo, $uid): void {
+    $stmt = $pdo->prepare("UPDATE meine_wortschatz SET Status = " . STATUS_FROM_SCORE_SQL . " WHERE user_id = ? AND (Status IS NULL OR Status <> " . STATUS_FROM_SCORE_SQL . ")");
+    $stmt->execute([$uid]);
+}
+
+// Apply game points to a score.
+// Gains start from at least 0, so a queued/passive word that is answered correctly enters the learning track.
+// Losses never push a learning word below 0 and never change a queued/passive word.
+function applyScorePoints(int $current, int $points): int {
+    if ($points >= 0) {
+        return max(0, $current) + $points;
+    }
+    return $current > 0 ? max(0, $current + $points) : $current;
+}
+
+// Days until the next review, based on the score
+function nextReviewDays(int $score): int {
+    return statusFromScore($score) === 'aktiva' ? $score * 10 : max(1, $score * 3);
+}
+
+// Store a new score for a word; status and next review date follow automatically. Returns the new status.
+function saveWordScore(PDO $pdo, $uid, string $wort, int $newScore): string {
+    $newStatus = statusFromScore($newScore);
+    $update = $pdo->prepare("UPDATE meine_wortschatz SET Score = ?, Status = ?, Modified = NOW(), NachsteUbungDatum = DATE_ADD(NOW(), INTERVAL ? DAY) WHERE Wort = ? AND user_id = ?");
+    $update->execute([$newScore, $newStatus, nextReviewDays($newScore), $wort, $uid]);
+    return $newStatus;
+}
+
 function jsonInput(): array {
     $data = json_decode(file_get_contents('php://input'), true);
     return is_array($data) ? $data : [];
@@ -522,7 +568,7 @@ if (isset($_GET['api'])) {
         $wortarten = trim($input['Wortarten'] ?? '');
         $beispiel = trim($input['Beispiel'] ?? '');
         $score = !empty($input['Score']) ? (int)$input['Score'] : 0;
-        $status = trim($input['Status'] ?? '') ?: 'neu';
+        $status = statusFromScore($score); // never taken from the form
 
         $konjugation = trim($input['Konjugation'] ?? '');
         $grundverb = $verbFlag === 1 ? trim($input['grundverb'] ?? '') : null;
@@ -573,8 +619,7 @@ if (isset($_GET['api'])) {
         $input = jsonInput();
         $wortToPromote = trim($input['Wort'] ?? '');
         if (!empty($wortToPromote)) {
-            $stmt = $pdo->prepare("UPDATE meine_wortschatz SET Score = 10, Status = 'aktiva', Modified = NOW(), NachsteUbungDatum = DATE_ADD(NOW(), INTERVAL (10 * 10) DAY) WHERE Wort = ? AND user_id = ?");
-            $stmt->execute([$wortToPromote, $uid]);
+            saveWordScore($pdo, $uid, $wortToPromote, 10);
             echo json_encode(['success' => true, 'message' => "Wort '$wortToPromote' direkt zu 'aktiva' (Score 10) befördert!"]);
         } else {
             echo json_encode(['success' => false, 'message' => 'Ungültiges Wort.']);
@@ -792,13 +837,8 @@ if (isset($_GET['api'])) {
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($row) {
-            $currentScore = (int)$row['Score'];
-            $newScore = max(0, $currentScore + $points);
-            $newStatus = ($newScore >= 10) ? 'aktiva' : 'wiederholen';
-            $newAddDatum = ($newStatus === 'aktiva') ? ($newScore * 10) : max(1, $newScore * 3);
-
-            $update = $pdo->prepare("UPDATE meine_wortschatz SET Score = ?, Status = ?, Modified = NOW(), NachsteUbungDatum = DATE_ADD(NOW(), INTERVAL ? DAY) WHERE Wort = ? AND user_id = ?");
-            $update->execute([$newScore, $newStatus, $newAddDatum, $word, $uid]);
+            $newScore = applyScorePoints((int)$row['Score'], $points);
+            saveWordScore($pdo, $uid, $word, $newScore);
         }
 
         $detailStmt = $pdo->prepare("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE Wort = ? AND user_id = ? LIMIT 1");
@@ -845,20 +885,16 @@ if (isset($_GET['api'])) {
             $currentStreak++;
             if ($currentStreak % 10 === 0) {
                 $superBoosterTriggered = true;
-                $newScore = $currentScore + 9;
+                $newScore = applyScorePoints($currentScore, 9);
             } else {
-                $newScore = $currentScore + 3;
+                $newScore = applyScorePoints($currentScore, 3);
             }
         } else {
             $currentStreak = 0;
-            $newScore = max(0, $currentScore - 1);
+            $newScore = applyScorePoints($currentScore, -1);
         }
 
-        $newStatus = ($newScore < 10) ? 'wiederholen' : ($row['Status'] ?: 'aktiva');
-        $newAddDatum = ($newStatus === 'aktiva') ? ($newScore * 10) : max(1, $newScore * 3);
-
-        $update = $pdo->prepare("UPDATE meine_wortschatz SET Score = ?, Status = ?, Modified = NOW(), NachsteUbungDatum = DATE_ADD(NOW(), INTERVAL ? DAY) WHERE Wort = ? AND user_id = ?");
-        $update->execute([$newScore, $newStatus, $newAddDatum, $wort, $uid]);
+        $newStatus = saveWordScore($pdo, $uid, $wort, $newScore);
 
         echo json_encode([
             'success' => true,
@@ -922,7 +958,7 @@ if (isset($_GET['api'])) {
 
         if ($row) {
             $currentScore = (int)$row['Score'];
-            $isAktiva = (strtolower(trim($row['Status'] ?? '')) === 'aktiva');
+            $isAktiva = (statusFromScore($currentScore) === 'aktiva');
 
             if ($isGrammaticallyCorrect && $isIdiomaticallyCorrect && $isAktiva) {
                 if ($action === 'check_sentence_booster') {
@@ -934,12 +970,8 @@ if (isset($_GET['api'])) {
                 $pointsToAdd = 1;
             }
 
-            $newScore = $currentScore + $pointsToAdd;
-            $newStatus = ($newScore >= 10) ? 'aktiva' : 'wiederholen';
-            $newAddDatum = ($newStatus === 'aktiva') ? ($newScore * 10) : max(1, $newScore * 3);
-
-            $update = $pdo->prepare("UPDATE meine_wortschatz SET Score = ?, Status = ?, Modified = NOW(), NachsteUbungDatum = DATE_ADD(NOW(), INTERVAL ? DAY) WHERE Wort = ? AND user_id = ?");
-            $update->execute([$newScore, $newStatus, $newAddDatum, $word, $uid]);
+            $newScore = applyScorePoints($currentScore, $pointsToAdd);
+            saveWordScore($pdo, $uid, $word, $newScore);
         }
 
         echo json_encode([
@@ -1070,30 +1102,29 @@ if (isset($_GET['api'])) {
 
             if ($row) {
                 $currentScore = (int)$row['Score'];
-                $currentStatus = trim((string)$row['Status']);
 
-                if ($result === 'sehr_gut') {
-                    $newScore = $currentScore + 3;
-                } elseif ($result === 'yes') {
-                    $newScore = $currentScore + 1;
-                } elseif ($result === 'wiederholen') {
-                    $newScore = max(0, $currentScore - 1);
-                } else {
-                    $newScore = $currentScore;
+                switch ($result) {
+                    case 'sehr_gut':
+                        $newScore = applyScorePoints($currentScore, 3);
+                        break;
+                    case 'yes':
+                        $newScore = applyScorePoints($currentScore, 1);
+                        break;
+                    case 'wiederholen':
+                        // Already in "wiederholen": lose a point but stay in it; otherwise restart at score 1
+                        $newScore = statusFromScore($currentScore) === 'wiederholen' ? max(1, $currentScore - 1) : 1;
+                        break;
+                    case 'passiv':
+                        $newScore = -1;
+                        break;
+                    case 'warteschlange':
+                        $newScore = min($currentScore, -2);
+                        break;
+                    default:
+                        $newScore = $currentScore;
                 }
 
-                $newStatus = ($result === 'passiv') ? 'passiv' : (($result === 'warteschlange') ? 'warteschlange' : (($newScore >= 10) ? 'aktiva' : 'wiederholen'));
-
-                $newAddDatum = ($newStatus === 'aktiva') ? ($newScore * 10) : max(1, $newScore * 3);
-
-                if ($result === 'wiederholen' && strtolower($currentStatus) !== 'wiederholen') {
-                    $newScore = 1;
-                    $newAddDatum = 3;
-                    $newStatus = 'wiederholen';
-                }
-
-                $update = $pdo->prepare("UPDATE meine_wortschatz SET Score = ?, Status = ?, Modified = NOW(), NachsteUbungDatum = DATE_ADD(NOW(), INTERVAL ? DAY) WHERE Wort = ? AND user_id = ?");
-                $update->execute([$newScore, $newStatus, $newAddDatum, $wort, $uid]);
+                saveWordScore($pdo, $uid, $wort, $newScore);
             }
         }
         echo json_encode(['success' => true]);
@@ -1160,6 +1191,9 @@ try {
 }
 
 try {
+    // Make sure every stored status matches its score (fixes older rows)
+    syncStatusesFromScore($pdo, $uid);
+
     $initialWords = userQuery($pdo, "SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ? ORDER BY Wort ASC LIMIT 50", [$uid])->fetchAll(PDO::FETCH_ASSOC) ?: [];
     foreach ($initialWords as &$w) {
         normalizeVerbFlag($w);
@@ -1288,6 +1322,7 @@ try {
             display: flex; align-items: center; min-height: 42px; margin-top: 5px; padding: 0 10px;
             border-radius: 6px; color: var(--md-on-surface); text-decoration: none; font-size: 0.9rem;
         }
+        button.account-menu-item { width: 100%; border: 0; background: transparent; font: inherit; font-size: 0.9rem; text-align: left; cursor: pointer; }
         .account-menu-item:hover { background: #383838; }
         .account-menu-logout { color: #ff8a80; }
         .account-menu-logout:hover { background: #3b2424; }
@@ -1341,6 +1376,31 @@ try {
             padding: 16px 16px 6px 16px;
             margin-bottom: 1.2rem;
         }
+        .word-hero {
+            background: linear-gradient(135deg, rgba(144, 202, 249, 0.12), rgba(144, 202, 249, 0.03));
+            border: 2px solid #90caf9; border-radius: 12px;
+            padding: 18px 18px 14px; margin-bottom: 1.5rem;
+        }
+        .word-hero-label { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 1.05rem; font-weight: 600; color: #90caf9; }
+        .required-badge {
+            padding: 2px 8px; border-radius: 10px; background: #90caf9; color: #0d2a42;
+            font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+        }
+        .word-hero-row { display: flex; gap: 10px; align-items: stretch; }
+        .word-hero-row input { flex: 1; margin-bottom: 0; padding: 14px; font-size: 1.15rem; font-weight: 500; }
+        .word-hero-row input:focus { border-color: #90caf9; box-shadow: 0 0 0 3px rgba(144, 202, 249, 0.25); }
+        .word-hero-row .btn { white-space: nowrap; padding: 0 18px; font-size: 0.95rem; }
+        .word-hero-hint { margin: 10px 0 0; font-size: 0.8rem; color: var(--md-text-muted); }
+        @media (max-width: 600px) {
+            .word-hero-row { flex-direction: column; }
+            .word-hero-row .btn { padding: 12px 18px; }
+        }
+        .field-auto-hint { margin-left: 6px; font-size: 0.75rem; font-weight: 400; color: var(--md-text-muted); }
+        .readonly-field, .readonly-field:focus {
+            background: transparent; border-style: dashed; color: #90caf9; font-weight: 600;
+            cursor: not-allowed; box-shadow: none; outline: none;
+        }
+        .score-status-legend { margin: -6px 0 12px; font-size: 0.75rem; color: var(--md-text-muted); }
         .form-group-section:last-of-type {
             margin-bottom: 1.5rem;
         }
@@ -1699,6 +1759,38 @@ try {
         .stats-text-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--md-border); }
         .stats-text-item:last-child { border-bottom: none; }
 
+        /* Filter dropdown */
+        .filter-toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
+        .filter-toolbar > input { flex: 1; min-width: 180px; margin-bottom: 0; padding: 10px; }
+        .filter-menu { position: relative; }
+        .filter-trigger {
+            display: inline-flex; align-items: center; gap: 8px; min-height: 42px; padding: 6px 14px;
+            border: 1px solid #454545; border-radius: 8px; background: #303030; color: var(--md-on-surface);
+            cursor: pointer; list-style: none; font: inherit; font-size: 0.9rem; font-weight: 600; user-select: none;
+        }
+        .filter-trigger::-webkit-details-marker { display: none; }
+        .filter-trigger:hover, .filter-menu[open] .filter-trigger { background: #3a3a3a; border-color: #666; }
+        .filter-trigger:focus-visible { outline: 2px solid #90caf9; outline-offset: 2px; }
+        .filter-menu[open] .account-chevron { margin-top: 4px; transform: rotate(225deg); }
+        .filter-badge {
+            display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px;
+            border-radius: 10px; background: var(--md-primary); color: #fff; font-size: 0.75rem;
+        }
+        .filter-badge[hidden] { display: none; }
+        .filter-popover {
+            position: absolute; z-index: 30; top: calc(100% + 8px); left: 0;
+            width: min(640px, calc(100vw - 32px)); max-height: 70vh; overflow-y: auto;
+            padding: 14px; border: 1px solid #454545; border-radius: 8px;
+            background: #252525; box-shadow: var(--md-elevation-2);
+        }
+        .filter-group { padding: 4px 0 14px; border-bottom: 1px solid var(--md-border); margin-bottom: 12px; }
+        .filter-group-title { margin: 0 0 10px; font-size: 0.85rem; font-weight: 600; color: var(--md-text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+        .filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+        .filter-field { display: flex; flex-direction: column; gap: 4px; margin: 0; font-size: 0.8rem; color: var(--md-text-muted); }
+        .filter-field select { width: 100%; margin-bottom: 0; padding: 9px; }
+        .filter-popover .alphabet-bar { margin: 0; padding: 0; border: 0; background: none; box-shadow: none; }
+        .filter-popover-footer { display: flex; justify-content: flex-end; gap: 10px; }
+
         @media (max-width: 900px) {
             table, thead, tbody, th, td, tr { display: block; width: 100% !important; }
             thead tr { display: none; }
@@ -1734,8 +1826,6 @@ try {
             <h1>📚 Mein Wortschatz</h1>
             <div class="header-actions">
                 <button onclick="openGameSelection()" class="btn btn-success">🎮 Spiel starten</button>
-                <button onclick="switchView('statistics')" class="btn btn-info">📊 Statistiken</button>
-                <a href="index.php?api=export_csv" class="btn btn-secondary">📥 CSV exportieren</a>
                 <details class="account-menu" id="accountMenu">
                     <summary class="account-trigger">
                         <span class="account-avatar" aria-hidden="true">👤</span>
@@ -1748,6 +1838,8 @@ try {
                             <strong><?= htmlspecialchars((string)(($_SESSION['display_name'] ?? '') ?: ($_SESSION['username'] ?? 'Benutzer')), ENT_QUOTES, 'UTF-8') ?></strong>
                         </div>
                         <a class="account-menu-item" href="profile.php">👤 Mein Profil</a>
+                        <button type="button" class="account-menu-item" onclick="document.getElementById('accountMenu').open = false; switchView('statistics');">📊 Statistiken</button>
+                        <a class="account-menu-item" href="index.php?api=export_csv">📥 CSV exportieren</a>
                         <a class="account-menu-item account-menu-logout" href="logout.php">↪ Abmelden</a>
                     </div>
                 </details>
@@ -1778,6 +1870,17 @@ try {
                 <h2 id="formTitle">Neues Wort hinzufügen</h2>
                 <form id="wordForm" onsubmit="submitWordForm(event)">
                     <input type="hidden" id="original_wort" name="original_wort">
+
+                    <div class="word-hero">
+                        <label for="Wort" class="word-hero-label">
+                            Wort <span class="required-badge">Pflichtfeld</span>
+                        </label>
+                        <div class="word-hero-row">
+                            <input type="text" id="Wort" name="Wort" required autocomplete="off" placeholder="z.B. Haus, laufen, schnell" onkeydown="handleWortKeydown(event)">
+                            <button type="button" class="btn btn-info" onclick="fillWordWithAI()" id="aiFillBtn">🤖 Mit KI ausfüllen</button>
+                        </div>
+                        <p class="word-hero-hint">Gib das Wort ein und lass die KI die restlichen Felder ausfüllen – oder fülle sie unten selbst aus.</p>
+                    </div>
 
                     <div class="form-group-section">
                         <label for="sharepoint_list">SharePoint-Liste</label>
@@ -1818,12 +1921,6 @@ try {
                             <input type="text" id="Artikel" name="Artikel" placeholder="z.B., der, die, das">
                         </div>
 
-                        <label for="Wort">Wort (Primärschlüssel) *</label>
-                        <div style="display: flex; gap: 8px; margin-bottom: 1rem;">
-                            <input type="text" id="Wort" name="Wort" required style="margin-bottom: 0; flex: 1;">
-                            <button type="button" class="btn btn-info" onclick="fillWordWithAI()" id="aiFillBtn" style="white-space: nowrap; padding: 10px 14px;">🤖 Mit KI ausfüllen</button>
-                        </div>
-
                         <div id="pluralGroup">
                             <label for="Plural">Plural</label>
                             <input type="text" id="Plural" name="Plural" placeholder="z.B., die Autos">
@@ -1841,10 +1938,11 @@ try {
 
                     <div class="form-group-section">
                         <label for="Score">Punktzahl (Score)</label>
-                        <input type="number" id="Score" name="Score" value="0">
+                        <input type="number" id="Score" name="Score" value="0" step="1" oninput="updateStatusFromScore()">
 
-                        <label for="Status">Status</label>
-                        <input type="text" id="Status" name="Status" placeholder="z.B., neu, passiv, wiederholen, warteschlange" value="neu">
+                        <label for="Status">Status <span class="field-auto-hint">wird automatisch aus dem Score berechnet</span></label>
+                        <input type="text" id="Status" value="neu" readonly tabindex="-1" class="readonly-field" aria-readonly="true">
+                        <p class="score-status-legend">&lt; -1 warteschlange · -1 passiv · 0 neu · 1–9 wiederholen · ≥ 10 aktiva</p>
                     </div>
 
                     <div style="display: flex; gap: 12px; margin-top: 1rem;">
@@ -1858,101 +1956,150 @@ try {
         <div class="card">
             <h2>Wortschatz-Datenbank</h2>
 
-            <div class="alphabet-bar" id="alphabetBar">
-                <button type="button" class="alphabet-btn active" onclick="setLetterFilter('')">Alle</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('A')">A</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('B')">B</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('C')">C</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('D')">D</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('E')">E</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('F')">F</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('G')">G</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('H')">H</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('I')">I</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('J')">J</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('K')">K</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('L')">L</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('M')">M</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('N')">N</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('O')">O</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('P')">P</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('Q')">Q</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('R')">R</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('S')">S</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('T')">T</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('U')">U</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('V')">V</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('W')">W</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('X')">X</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('Y')">Y</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('Z')">Z</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('Ä')">Ä</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('Ö')">Ö</button>
-                <button type="button" class="alphabet-btn" onclick="setLetterFilter('Ü')">Ü</button>
-            </div>
-
             <form id="filterForm" onsubmit="event.preventDefault(); loadDashboardData(true);">
-                <div class="filters">
-                    <select id="filterList" name="sharepoint_list" onchange="loadDashboardData(true)">
-                        <option value="">Alle Listen</option>
-                        <?php foreach ($initialLists as $l): ?>
-                            <option value="<?= htmlspecialchars($l) ?>"><?= htmlspecialchars($l) ?></option>
-                        <?php endforeach; ?>
-                    </select>
+                <div class="filter-toolbar">
+                    <details class="filter-menu" id="filterMenu">
+                        <summary class="filter-trigger">
+                            <span aria-hidden="true">⚙️</span>
+                            <span>Filter</span>
+                            <span class="filter-badge" id="filterBadge" hidden>0</span>
+                            <span class="account-chevron" aria-hidden="true"></span>
+                        </summary>
+                        <div class="filter-popover">
+                            <section class="filter-group">
+                                <h3 class="filter-group-title">🔤 Anfangsbuchstabe</h3>
+                                <div class="alphabet-bar" id="alphabetBar">
+                                    <button type="button" class="alphabet-btn active" onclick="setLetterFilter('')">Alle</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('A')">A</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('B')">B</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('C')">C</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('D')">D</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('E')">E</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('F')">F</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('G')">G</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('H')">H</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('I')">I</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('J')">J</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('K')">K</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('L')">L</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('M')">M</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('N')">N</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('O')">O</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('P')">P</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('Q')">Q</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('R')">R</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('S')">S</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('T')">T</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('U')">U</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('V')">V</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('W')">W</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('X')">X</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('Y')">Y</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('Z')">Z</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('Ä')">Ä</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('Ö')">Ö</button>
+                                    <button type="button" class="alphabet-btn" onclick="setLetterFilter('Ü')">Ü</button>
+                                </div>
+                            </section>
 
-                    <select id="filterThema" name="thema" onchange="onDashboardThemaChange()">
-                        <option value="">Alle Themen</option>
-                        <?php foreach ($initialThemen as $thm): ?>
-                            <option value="<?= htmlspecialchars($thm) ?>"><?= htmlspecialchars($thm) ?></option>
-                        <?php endforeach; ?>
-                    </select>
+                            <section class="filter-group">
+                                <h3 class="filter-group-title">🗂️ Kategorien</h3>
+                                <div class="filter-grid">
+                                <label class="filter-field">
+                                    <span>Liste</span>
+                                    <select id="filterList" name="sharepoint_list" onchange="loadDashboardData(true)">
+                                        <option value="">Alle Listen</option>
+                                        <?php foreach ($initialLists as $l): ?>
+                                            <option value="<?= htmlspecialchars($l) ?>"><?= htmlspecialchars($l) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </label>
+                                <label class="filter-field">
+                                    <span>Thema</span>
+                                    <select id="filterThema" name="thema" onchange="onDashboardThemaChange()">
+                                        <option value="">Alle Themen</option>
+                                        <?php foreach ($initialThemen as $thm): ?>
+                                            <option value="<?= htmlspecialchars($thm) ?>"><?= htmlspecialchars($thm) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </label>
+                                <label class="filter-field">
+                                    <span>Wortart</span>
+                                    <select id="filterWortart" name="wortart" onchange="loadDashboardData(true)">
+                                        <option value="">Alle Wortarten</option>
+                                        <?php foreach ($initialWortarten as $wa): ?>
+                                            <option value="<?= htmlspecialchars($wa) ?>"><?= htmlspecialchars($wa) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </label>
+                                </div>
+                            </section>
 
-                    <select id="filterWortart" name="wortart" onchange="loadDashboardData(true)">
-                        <option value="">Alle Wortarten</option>
-                        <?php foreach ($initialWortarten as $wa): ?>
-                            <option value="<?= htmlspecialchars($wa) ?>"><?= htmlspecialchars($wa) ?></option>
-                        <?php endforeach; ?>
-                    </select>
+                            <section class="filter-group">
+                                <h3 class="filter-group-title">📈 Status</h3>
+                                <div class="filter-grid">
+                                <label class="filter-field">
+                                    <span>Score</span>
+                                    <select id="filterScore" name="score" onchange="loadDashboardData(true)">
+                                        <option value="">Alle Scores</option>
+                                        <?php foreach ($initialScores as $s): ?>
+                                            <option value="<?= htmlspecialchars($s) ?>">Score: <?= htmlspecialchars($s) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </label>
+                                <label class="filter-field">
+                                    <span>Status</span>
+                                    <select id="filterStatus" name="status" onchange="loadDashboardData(true)">
+                                        <option value="">Alle Status</option>
+                                        <?php foreach ($initialStatuses as $st): ?>
+                                            <option value="<?= htmlspecialchars($st) ?>"><?= htmlspecialchars($st) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </label>
+                                </div>
+                            </section>
 
-                    <select id="filterScore" name="score" onchange="loadDashboardData(true)">
-                        <option value="">Alle Scores</option>
-                        <?php foreach ($initialScores as $s): ?>
-                            <option value="<?= htmlspecialchars($s) ?>">Score: <?= htmlspecialchars($s) ?></option>
-                        <?php endforeach; ?>
-                    </select>
+                            <section class="filter-group">
+                                <h3 class="filter-group-title">🔧 Verben</h3>
+                                <div class="filter-grid">
+                                <label class="filter-field">
+                                    <span>Verbtyp</span>
+                                    <select id="filterVerbFlag" name="verb_flag" onchange="loadDashboardData(true)">
+                                        <option value="">Alle Wörter</option>
+                                        <option value="1">Nur Verben</option>
+                                        <option value="0">Kein Verb</option>
+                                    </select>
+                                </label>
+                                <label class="filter-field">
+                                    <span>Grundverb</span>
+                                    <select id="filterGrundverb" name="grundverb" onchange="loadDashboardData(true)">
+                                        <option value="">Alle Grundverben</option>
+                                        <?php foreach ($initialGrundverben as $gv): ?>
+                                            <option value="<?= htmlspecialchars($gv) ?>"><?= htmlspecialchars($gv) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </label>
+                                <label class="filter-field">
+                                    <span>Präfix</span>
+                                    <select id="filterPraefix" name="praefix" onchange="loadDashboardData(true)">
+                                        <option value="">Alle Präfixe</option>
+                                        <?php foreach ($initialPraefixe as $pr): ?>
+                                            <option value="<?= htmlspecialchars($pr) ?>"><?= htmlspecialchars($pr) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </label>
+                                </div>
+                            </section>
 
-                    <select id="filterStatus" name="status" onchange="loadDashboardData(true)">
-                        <option value="">Alle Status</option>
-                        <?php foreach ($initialStatuses as $st): ?>
-                            <option value="<?= htmlspecialchars($st) ?>"><?= htmlspecialchars($st) ?></option>
-                        <?php endforeach; ?>
-                    </select>
+                            <div class="filter-popover-footer">
+                                <button type="button" class="btn btn-secondary" onclick="resetFilters()">Zurücksetzen</button>
+                                <button type="button" class="btn" onclick="closeFilterMenu()">Fertig</button>
+                            </div>
+                        </div>
+                    </details>
 
-                    <select id="filterVerbFlag" name="verb_flag" onchange="loadDashboardData(true)">
-                        <option value="">Alle Wörter</option>
-                        <option value="1">Nur Verben</option>
-                        <option value="0">Kein Verb</option>
-                    </select>
-
-                    <select id="filterGrundverb" name="grundverb" onchange="loadDashboardData(true)">
-                        <option value="">Alle Grundverben</option>
-                        <?php foreach ($initialGrundverben as $gv): ?>
-                            <option value="<?= htmlspecialchars($gv) ?>"><?= htmlspecialchars($gv) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-
-                    <select id="filterPraefix" name="praefix" onchange="loadDashboardData(true)">
-                        <option value="">Alle Präfixe</option>
-                        <?php foreach ($initialPraefixe as $pr): ?>
-                            <option value="<?= htmlspecialchars($pr) ?>"><?= htmlspecialchars($pr) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-
-                    <button type="button" class="btn btn-secondary" onclick="resetFilters()" style="padding: 10px 14px;">Zurücksetzen</button>
-                </div>
-                <div class="filters">
-                    <input type="text" id="filterSearch" placeholder="Wort suchen (beginnt mit)..." oninput="handleSearchInput()" style="flex: 1;">
-                    <input type="text" id="filterTranslationSearch" placeholder="Übersetzung suchen..." oninput="handleTranslationSearchInput()" style="flex: 1;">
+                    <input type="text" id="filterSearch" placeholder="Wort suchen (beginnt mit)..." oninput="handleSearchInput()">
+                    <input type="text" id="filterTranslationSearch" placeholder="Übersetzung suchen..." oninput="handleTranslationSearchInput()">
                 </div>
             </form>
 
@@ -2489,6 +2636,19 @@ const dailyTarget = 100;
 
 document.addEventListener('DOMContentLoaded', () => {
     updateDailyTrackerUI();
+
+    const filterMenu = document.getElementById('filterMenu');
+    if (filterMenu) {
+        document.addEventListener('click', event => {
+            if (filterMenu.open && !filterMenu.contains(event.target)) filterMenu.open = false;
+        });
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && filterMenu.open) {
+                filterMenu.open = false;
+                filterMenu.querySelector('summary').focus();
+            }
+        });
+    }
 
     const accountMenu = document.getElementById('accountMenu');
     if (accountMenu) {
@@ -4588,7 +4748,29 @@ function handleTranslationSearchInput() {
     }, 300);
 }
 
+function closeFilterMenu() {
+    const menu = document.getElementById('filterMenu');
+    if (menu) {
+        menu.open = false;
+        menu.querySelector('summary').focus();
+    }
+}
+
+function updateFilterBadge() {
+    const badge = document.getElementById('filterBadge');
+    if (!badge) return;
+    const ids = ['filterList', 'filterThema', 'filterWortart', 'filterScore', 'filterStatus', 'filterVerbFlag', 'filterGrundverb', 'filterPraefix'];
+    let count = currentLetter ? 1 : 0;
+    ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (el && el.value !== '') count++;
+    });
+    badge.textContent = count;
+    badge.hidden = count === 0;
+}
+
 async function loadDashboardData(reset = false) {
+    updateFilterBadge();
     if (reset) {
         currentOffset = 0;
         hasMoreData = true;
@@ -4726,6 +4908,29 @@ function openAddForm() {
     resetForm();
     document.getElementById('formContainer').classList.add('active');
     document.getElementById('formToggleBar').style.display = 'none';
+    document.getElementById('Wort').focus();
+}
+
+// Mirror of statusFromScore() in PHP – the server always recalculates it anyway
+function statusFromScore(score) {
+    if (score < -1) return 'warteschlange';
+    if (score === -1) return 'passiv';
+    if (score === 0) return 'neu';
+    if (score < 10) return 'wiederholen';
+    return 'aktiva';
+}
+
+function updateStatusFromScore() {
+    const raw = parseInt(document.getElementById('Score').value, 10);
+    document.getElementById('Status').value = statusFromScore(Number.isNaN(raw) ? 0 : raw);
+}
+
+// Enter in the Wort field starts the AI fill for a new word instead of saving it half-empty
+function handleWortKeydown(event) {
+    if (event.key !== 'Enter') return;
+    if (document.getElementById('original_wort').value) return; // editing: keep normal submit
+    event.preventDefault();
+    if (!document.getElementById('aiFillBtn').disabled) fillWordWithAI();
 }
 
 function toggleVerbFields() {
@@ -4750,8 +4955,8 @@ function toggleVerbFields() {
 function resetForm() {
     document.getElementById('wordForm').reset();
     document.getElementById('original_wort').value = '';
-    document.getElementById('Status').value = 'neu';
     document.getElementById('Score').value = '0';
+    updateStatusFromScore();
     toggleVerbFields();
     document.getElementById('formTitle').textContent = 'Neues Wort hinzufügen';
     document.getElementById('formSubmitBtn').textContent = 'Wort speichern';
@@ -4781,7 +4986,7 @@ function editWord(row) {
 
     document.getElementById('Beispiel').value = row.Beispiel || '';
     document.getElementById('Score').value = row.Score || 0;
-    document.getElementById('Status').value = row.Status || 'neu';
+    updateStatusFromScore();
 
     document.getElementById('formTitle').textContent = 'Wort bearbeiten';
     document.getElementById('formSubmitBtn').textContent = 'Wort aktualisieren';
@@ -4808,8 +5013,7 @@ async function submitWordForm(e) {
         praefix: document.getElementById('praefix').value,
         praeposition_kollokation: document.getElementById('praeposition_kollokation').value,
         Beispiel: document.getElementById('Beispiel').value,
-        Score: document.getElementById('Score').value,
-        Status: document.getElementById('Status').value
+        Score: document.getElementById('Score').value
     };
 
     const res = await fetch('index.php?api=save&_ts=' + Date.now(), {
