@@ -112,6 +112,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         <button type="submit" class="btn">Login</button>
     </form>
+    <a href="google_login.php" class="btn" style="display:block;text-align:center;text-decoration:none;margin-top:10px;background:#fff;color:#1e293b;border:1px solid var(--border-color);">
+        Mit Google anmelden
+    </a>
 </div>
 
 </body>
