@@ -18,6 +18,7 @@ if (empty($_SESSION['logged_in']) || $uid <= 0) {
 }
 
 require_once 'db.php';
+require_once 'theme.php';
 
 if (empty($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
@@ -92,6 +93,7 @@ function e(string $s): string {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <?php theme_head(); ?>
     <title>Profil - Mein Wortschatz</title>
     <style>
         :root {

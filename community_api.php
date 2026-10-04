@@ -1,6 +1,6 @@
 <?php
 // community_api.php - JSON backend for the community feature.
-// GET  ?action=overview | friend_stats&friend_id= | messages&friend_id=&after_id=
+// GET  ?action=overview | search_users&q= | friend_stats&friend_id= | messages&friend_id=&after_id=
 // POST ?action=send_request | respond_request | remove_friend | block | unblock | send_message
 //      (JSON body + header "X-CSRF-Token")
 ini_set('display_errors', 0);
@@ -97,14 +97,73 @@ try {
             $stmt->execute([$me]);
             $blocked = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+            // Chats list (Messenger style): last message per current friend, newest first
+            $stmt = $pdo->prepare("SELECT u.id, $name AS name, m.body, m.created_at, m.sender_id,
+                    (SELECT COUNT(*) FROM messages x
+                      WHERE x.sender_id = u.id AND x.receiver_id = ? AND x.read_at IS NULL) AS unread
+                FROM (
+                    SELECT IF(sender_id = ?, receiver_id, sender_id) AS other_id, MAX(id) AS last_id
+                    FROM messages
+                    WHERE sender_id = ? OR receiver_id = ?
+                    GROUP BY other_id
+                ) c
+                JOIN messages m ON m.id = c.last_id
+                JOIN users u ON u.id = c.other_id
+                JOIN friendships f ON f.user_low = LEAST(u.id, ?) AND f.user_high = GREATEST(u.id, ?)
+                                  AND f.status = 'accepted'
+                ORDER BY m.id DESC
+                LIMIT 50");
+            $stmt->execute([$me, $me, $me, $me, $me, $me]);
+            $conversations = array_map(fn($r) => [
+                'id'         => (int)$r['id'],
+                'name'       => $r['name'],
+                'preview'    => mb_strimwidth(preg_replace('/\s+/', ' ', $r['body']), 0, 80, '…'),
+                'mine'       => (int)$r['sender_id'] === $me,
+                'created_at' => $r['created_at'],
+                'unread'     => (int)$r['unread'],
+            ], $stmt->fetchAll(PDO::FETCH_ASSOC));
+
+            // Ranking: me + my friends by number of active words
+            $stmt = $pdo->prepare("SELECT u.id, $name AS name,
+                    (SELECT COUNT(*) FROM meine_wortschatz w WHERE w.user_id = u.id AND w.Status = 'aktiva') AS active,
+                    (SELECT COUNT(*) FROM meine_wortschatz w WHERE w.user_id = u.id) AS total
+                FROM users u
+                WHERE u.id = ?
+                   OR u.id IN (SELECT IF(f.requester_id = ?, f.addressee_id, f.requester_id)
+                               FROM friendships f
+                               WHERE f.status = 'accepted' AND (f.requester_id = ? OR f.addressee_id = ?))
+                ORDER BY active DESC, name ASC");
+            $stmt->execute([$me, $me, $me, $me]);
+
+            $ranking = [];
+            $rank = 0;
+            $prevActive = null;
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $i => $r) {
+                $active = (int)$r['active'];
+                if ($active !== $prevActive) {
+                    $rank = $i + 1; // ties share the same rank
+                    $prevActive = $active;
+                }
+                $ranking[] = [
+                    'id'     => (int)$r['id'],
+                    'name'   => $r['name'],
+                    'active' => $active,
+                    'total'  => (int)$r['total'],
+                    'rank'   => $rank,
+                    'me'     => (int)$r['id'] === $me,
+                ];
+            }
+
             respond([
-                'success'     => true,
-                'csrf_token'  => $_SESSION['csrf_token'],
-                'friend_code' => $code,
-                'friends'     => $friends,
-                'incoming'    => $incoming,
-                'outgoing'    => $outgoing,
-                'blocked'     => $blocked,
+                'success'       => true,
+                'csrf_token'    => $_SESSION['csrf_token'],
+                'friend_code'   => $code,
+                'friends'       => $friends,
+                'incoming'      => $incoming,
+                'outgoing'      => $outgoing,
+                'blocked'       => $blocked,
+                'conversations' => $conversations,
+                'ranking'       => $ranking,
             ]);
 
         // ---------- Stats: friend's and mine, for comparison ----------
@@ -156,25 +215,80 @@ try {
 
             respond(['success' => true, 'messages' => $messages]);
 
-        // ---------- Send a friend request by code ----------
-        case 'send_request':
-            $code = strtoupper(trim((string)($input['friend_code'] ?? '')));
-            if (!preg_match('/^[A-Z0-9]{8}$/', $code)) {
-                fail('Ungültiger Code.');
+        // ---------- Search people by name (empty query = everyone) ----------
+        case 'search_users':
+            $q = trim((string)($_GET['q'] ?? ''));
+            if (mb_strlen($q) > 50) {
+                $q = mb_substr($q, 0, 50);
             }
 
-            $stmt = $pdo->prepare("SELECT id FROM users WHERE friend_code = ? LIMIT 1");
-            $stmt->execute([$code]);
-            $target = (int)$stmt->fetchColumn();
+            // Search only the public name, never username/email,
+            // so nobody can find out which email addresses have an account.
+            $sql = "SELECT u.id, $name AS name, f.id AS request_id, f.status, f.requester_id
+                FROM users u
+                LEFT JOIN friendships f
+                       ON f.user_low = LEAST(u.id, ?) AND f.user_high = GREATEST(u.id, ?)
+                WHERE u.id != ?
+                  AND NOT EXISTS (SELECT 1 FROM user_blocks b
+                                  WHERE (b.blocker_id = u.id AND b.blocked_id = ?)
+                                     OR (b.blocker_id = ? AND b.blocked_id = u.id))";
+            $params = [$me, $me, $me, $me, $me];
+
+            if ($q !== '') {
+                $sql .= " AND ($name) LIKE ?";
+                $params[] = '%' . addcslashes($q, '%_\\') . '%';
+            }
+            $sql .= " ORDER BY name ASC LIMIT 50";
+
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+
+            $people = array_map(function ($r) use ($me) {
+                if ($r['status'] === 'accepted') {
+                    $relation = 'friend';
+                } elseif ($r['status'] === 'pending') {
+                    $relation = ((int)$r['requester_id'] === $me) ? 'outgoing' : 'incoming';
+                } else {
+                    $relation = 'none';
+                }
+                return [
+                    'id'         => (int)$r['id'],
+                    'name'       => $r['name'],
+                    'relation'   => $relation,
+                    'request_id' => $relation === 'incoming' ? (int)$r['request_id'] : null,
+                ];
+            }, $stmt->fetchAll(PDO::FETCH_ASSOC));
+
+            respond(['success' => true, 'people' => $people]);
+
+        // ---------- Send a friend request (by user id from search, or by code) ----------
+        case 'send_request':
+            $target = (int)($input['user_id'] ?? 0);
+            $notFound = 'Person nicht gefunden.';
+
+            if ($target > 0) {
+                $stmt = $pdo->prepare("SELECT id FROM users WHERE id = ? LIMIT 1");
+                $stmt->execute([$target]);
+                $target = (int)$stmt->fetchColumn();
+            } else {
+                $code = strtoupper(trim((string)($input['friend_code'] ?? '')));
+                if (!preg_match('/^[A-Z0-9]{8}$/', $code)) {
+                    fail('Ungültiger Code.');
+                }
+                $stmt = $pdo->prepare("SELECT id FROM users WHERE friend_code = ? LIMIT 1");
+                $stmt->execute([$code]);
+                $target = (int)$stmt->fetchColumn();
+                $notFound = 'Code nicht gefunden.';
+            }
 
             if ($target <= 0 || $target === $me) {
-                fail('Code nicht gefunden.', 404);
+                fail($notFound, 404);
             }
             if (isBlockedBy($pdo, $me, $target)) {
                 fail('Du hast diese Person blockiert. Hebe die Blockierung zuerst auf.');
             }
             if (isBlockedBy($pdo, $target, $me)) {
-                fail('Code nicht gefunden.', 404); // don't reveal the block
+                fail($notFound, 404); // don't reveal the block
             }
 
             $f = getFriendship($pdo, $me, $target);

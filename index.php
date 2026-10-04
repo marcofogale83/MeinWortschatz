@@ -24,6 +24,7 @@ session_start();
 
 // db.php loads config.php and creates $pdo and $config
 require_once 'db.php';
+require_once 'theme.php';
 
 // --- CURRENT USER: every vocabulary query is scoped to this ID ---
 $uid = (int)($_SESSION['user_id'] ?? 0);
@@ -1241,6 +1242,7 @@ try {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <?php theme_head(); ?>
     <title>Mein Wortschatz - SPA</title>
 
     <meta name="theme-color" content="#1e88e5">
@@ -1274,6 +1276,73 @@ try {
             --md-warning-yellow: #ffb74d;
             --md-elevation-1: 0 1px 3px rgba(0,0,0,0.5), 0 1px 2px rgba(0,0,0,0.4);
             --md-elevation-2: 0 3px 6px rgba(0,0,0,0.6), 0 2px 4px rgba(0,0,0,0.5);
+
+            /* Theme-dependent colors (dark defaults) */
+            --md-accent-text: #90caf9;
+            --md-on-accent: #0d2a42;
+            --md-control-bg: #303030;
+            --md-control-hover: #3a3a3a;
+            --md-control-border: #454545;
+            --md-control-border-hover: #666666;
+            --md-popover-bg: #252525;
+            --md-menu-hover: #383838;
+            --md-hover-bg: #282828;
+            --md-subtle-hover: rgba(255,255,255,0.03);
+            --md-th-bg: #242424;
+            --md-track: #333333;
+            --md-avatar-bg: #17466b;
+            --md-avatar-text: #bbdefb;
+            --md-logout-text: #ff8a80;
+            --md-logout-hover: #3b2424;
+            --md-der: #64b5f6;
+            --md-die: #f06292;
+            --md-das: #ffb74d;
+            --md-article-other: #b0b0b0;
+            --md-text-purple: #b39ddb;
+            --md-text-success: #81c784;
+            --md-notice-bg: #332701;
+            --md-notice-text: #ffecb3;
+            --md-notice-border: #795548;
+        }
+
+        /* ===== Light theme ===== */
+        :root[data-theme="light"] {
+            --md-primary-light: #e3f2fd;
+            --md-bg: #f4f6f8;
+            --md-surface: #ffffff;
+            --md-surface-card: #f8f9fb;
+            --md-on-surface: #1f2933;
+            --md-text-muted: #5f6b7a;
+            --md-border: #dde2e8;
+            --md-warning-yellow: #e68a00;
+            --md-elevation-1: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
+            --md-elevation-2: 0 3px 6px rgba(0,0,0,0.10), 0 2px 4px rgba(0,0,0,0.08);
+
+            --md-accent-text: #1565c0;
+            --md-on-accent: #ffffff;
+            --md-control-bg: #f1f4f7;
+            --md-control-hover: #e6ebf0;
+            --md-control-border: #d0d7de;
+            --md-control-border-hover: #b8c1cb;
+            --md-popover-bg: #ffffff;
+            --md-menu-hover: #eef1f5;
+            --md-hover-bg: #eef3f9;
+            --md-subtle-hover: rgba(0,0,0,0.04);
+            --md-th-bg: #eef1f5;
+            --md-track: #e3e7ec;
+            --md-avatar-bg: #d6eaff;
+            --md-avatar-text: #1565c0;
+            --md-logout-text: #c62828;
+            --md-logout-hover: #fdecea;
+            --md-der: #1976d2;
+            --md-die: #c2185b;
+            --md-das: #e65100;
+            --md-article-other: #616161;
+            --md-text-purple: #6a1b9a;
+            --md-text-success: #2e7d32;
+            --md-notice-bg: #fff8e1;
+            --md-notice-text: #6d4c00;
+            --md-notice-border: #ffcc80;
         }
         * { box-sizing: border-box; }
         body {
@@ -1293,16 +1362,16 @@ try {
         .account-menu { position: relative; }
         .account-trigger {
             display: inline-flex; align-items: center; gap: 9px; min-height: 42px;
-            padding: 6px 12px 6px 7px; border: 1px solid #454545; border-radius: 8px;
-            background: #303030; color: var(--md-on-surface); cursor: pointer; list-style: none;
+            padding: 6px 12px 6px 7px; border: 1px solid var(--md-control-border); border-radius: 8px;
+            background: var(--md-control-bg); color: var(--md-on-surface); cursor: pointer; list-style: none;
             font: inherit; font-size: 0.9rem; font-weight: 600;
         }
         .account-trigger::-webkit-details-marker { display: none; }
-        .account-trigger:hover, .account-menu[open] .account-trigger { background: #3a3a3a; border-color: #666; }
-        .account-trigger:focus-visible, .account-menu-item:focus-visible { outline: 2px solid #90caf9; outline-offset: 2px; }
+        .account-trigger:hover, .account-menu[open] .account-trigger { background: var(--md-control-hover); border-color: var(--md-control-border-hover); }
+        .account-trigger:focus-visible, .account-menu-item:focus-visible { outline: 2px solid var(--md-accent-text); outline-offset: 2px; }
         .account-avatar {
             display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
-            background: #17466b; color: #bbdefb; font-size: 0.85rem;
+            background: var(--md-avatar-bg); color: var(--md-avatar-text); font-size: 0.85rem;
         }
         .account-chevron {
             width: 7px; height: 7px; margin: -4px 0 0 3px;
@@ -1312,8 +1381,8 @@ try {
         .account-menu[open] .account-chevron { margin-top: 4px; transform: rotate(225deg); }
         .account-popover {
             position: absolute; z-index: 30; top: calc(100% + 8px); right: 0; width: 240px;
-            padding: 8px; border: 1px solid #454545; border-radius: 8px;
-            background: #252525; box-shadow: var(--md-elevation-2);
+            padding: 8px; border: 1px solid var(--md-control-border); border-radius: 8px;
+            background: var(--md-popover-bg); box-shadow: var(--md-elevation-2);
         }
         .account-menu-identity { padding: 9px 10px 12px; border-bottom: 1px solid var(--md-border); }
         .account-menu-caption { display: block; margin-bottom: 4px; color: var(--md-text-muted); font-size: 0.75rem; }
@@ -1323,10 +1392,14 @@ try {
             border-radius: 6px; color: var(--md-on-surface); text-decoration: none; font-size: 0.9rem;
         }
         button.account-menu-item { width: 100%; border: 0; background: transparent; font: inherit; font-size: 0.9rem; text-align: left; cursor: pointer; }
-        .account-menu-item:hover { background: #383838; }
-        .account-menu-logout { color: #ff8a80; }
-        .account-menu-logout:hover { background: #3b2424; }
-        h1 { font-size: 1.5rem; font-weight: 500; margin: 0; color: #90caf9; display: flex; align-items: center; gap: 8px; }
+        .account-menu-item:hover { background: var(--md-menu-hover); }
+        .account-menu-theme { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px 10px; border-bottom: 1px solid var(--md-border); margin-bottom: 4px; font-size: 0.9rem; }
+        .theme-label-light { display: none; }
+        :root[data-theme="light"] .theme-label-dark { display: none; }
+        :root[data-theme="light"] .theme-label-light { display: inline; }
+        .account-menu-logout { color: var(--md-logout-text); }
+        .account-menu-logout:hover { background: var(--md-logout-hover); }
+        h1 { font-size: 1.5rem; font-weight: 500; margin: 0; color: var(--md-accent-text); display: flex; align-items: center; gap: 8px; }
         h2 { font-size: 1.15rem; font-weight: 500; margin: 0 0 1rem 0; color: var(--md-on-surface); }
 
         .daily-tracker {
@@ -1340,14 +1413,14 @@ try {
         .tracker-text h3 { margin: 0; font-size: 1rem; color: var(--md-on-surface); }
         .tracker-text p { margin: 2px 0 0 0; font-size: 0.85rem; color: var(--md-text-muted); }
         .tracker-progress-bar {
-            flex: 1; min-width: 200px; background: #333; height: 12px; border-radius: 6px; overflow: hidden; position: relative;
+            flex: 1; min-width: 200px; background: var(--md-track); height: 12px; border-radius: 6px; overflow: hidden; position: relative;
         }
         .tracker-progress-fill {
             background: linear-gradient(90deg, #1e88e5, var(--md-success)); height: 100%; width: 0%; transition: width 0.4s ease;
         }
 
         .alert {
-            background-color: var(--md-primary-light); color: #90caf9; padding: 12px 16px;
+            background-color: var(--md-primary-light); color: var(--md-accent-text); padding: 12px 16px;
             border-radius: 8px; margin-bottom: 1rem; border: 1px solid #1565c0; font-size: 0.9rem;
             box-shadow: var(--md-elevation-1);
         }
@@ -1378,17 +1451,17 @@ try {
         }
         .word-hero {
             background: linear-gradient(135deg, rgba(144, 202, 249, 0.12), rgba(144, 202, 249, 0.03));
-            border: 2px solid #90caf9; border-radius: 12px;
+            border: 2px solid var(--md-accent-text); border-radius: 12px;
             padding: 18px 18px 14px; margin-bottom: 1.5rem;
         }
-        .word-hero-label { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 1.05rem; font-weight: 600; color: #90caf9; }
+        .word-hero-label { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 1.05rem; font-weight: 600; color: var(--md-accent-text); }
         .required-badge {
-            padding: 2px 8px; border-radius: 10px; background: #90caf9; color: #0d2a42;
+            padding: 2px 8px; border-radius: 10px; background: var(--md-accent-text); color: var(--md-on-accent);
             font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
         }
         .word-hero-row { display: flex; gap: 10px; align-items: stretch; }
         .word-hero-row input { flex: 1; margin-bottom: 0; padding: 14px; font-size: 1.15rem; font-weight: 500; }
-        .word-hero-row input:focus { border-color: #90caf9; box-shadow: 0 0 0 3px rgba(144, 202, 249, 0.25); }
+        .word-hero-row input:focus { border-color: var(--md-accent-text); box-shadow: 0 0 0 3px rgba(144, 202, 249, 0.25); }
         .word-hero-row .btn { white-space: nowrap; padding: 0 18px; font-size: 0.95rem; }
         .word-hero-hint { margin: 10px 0 0; font-size: 0.8rem; color: var(--md-text-muted); }
         @media (max-width: 600px) {
@@ -1397,7 +1470,7 @@ try {
         }
         .field-auto-hint { margin-left: 6px; font-size: 0.75rem; font-weight: 400; color: var(--md-text-muted); }
         .readonly-field, .readonly-field:focus {
-            background: transparent; border-style: dashed; color: #90caf9; font-weight: 600;
+            background: transparent; border-style: dashed; color: var(--md-accent-text); font-weight: 600;
             cursor: not-allowed; box-shadow: none; outline: none;
         }
         .score-status-legend { margin: -6px 0 12px; font-size: 0.75rem; color: var(--md-text-muted); }
@@ -1442,7 +1515,7 @@ try {
         .table-responsive { width: 100%; height: 650px; overflow-y: auto; overflow-x: auto; border: 1px solid var(--md-border); border-radius: 8px; position: relative; }
         table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem; table-layout: fixed; }
         th, td { padding: 14px 10px; border-bottom: 1px solid var(--md-border); vertical-align: top; word-wrap: break-word; }
-        th { background-color: #242424; font-weight: 600; white-space: nowrap; cursor: pointer; color: var(--md-on-surface); position: sticky; top: 0; z-index: 10; }
+        th { background-color: var(--md-th-bg); font-weight: 600; white-space: nowrap; cursor: pointer; color: var(--md-on-surface); position: sticky; top: 0; z-index: 10; }
         th a { color: var(--md-on-surface); text-decoration: none; display: flex; align-items: center; gap: 4px; }
 
         th:nth-child(1), td:nth-child(1) { width: 5%; }
@@ -1456,10 +1529,10 @@ try {
         th:nth-child(9), td:nth-child(9) { width: 15%; }
 
         .wort-cell { font-size: 1.15rem; font-weight: 600; }
-        .wort-der { color: #64b5f6; }
-        .wort-die { color: #f06292; }
-        .wort-das { color: #ffb74d; }
-        .wort-other { color: #b0b0b0; }
+        .wort-der { color: var(--md-der); }
+        .wort-die { color: var(--md-die); }
+        .wort-das { color: var(--md-das); }
+        .wort-other { color: var(--md-article-other); }
         .kenntnisse-cell { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
         .status-cell { font-weight: 500; }
         .aktion-cell { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
@@ -1484,7 +1557,7 @@ try {
             font-weight: 600;
             font-size: 0.95rem;
             cursor: pointer;
-            color: #90caf9;
+            color: var(--md-accent-text);
             padding: 4px 0;
             user-select: none;
             display: flex;
@@ -1519,7 +1592,7 @@ try {
             text-decoration: underline;
         }
         .settings-action-link:hover {
-            color: #90caf9;
+            color: var(--md-accent-text);
         }
 
         /* Modern Chip Multi-Select Pill UI */
@@ -1546,7 +1619,7 @@ try {
         }
         .status-pill:hover {
             border-color: var(--md-primary);
-            background: #282828;
+            background: var(--md-hover-bg);
         }
         .status-pill.active {
             background: var(--md-primary);
@@ -1590,7 +1663,7 @@ try {
             transition: background 0.15s;
         }
         .checkbox-label:hover {
-            background: rgba(255,255,255,0.03);
+            background: var(--md-subtle-hover);
         }
         .checkbox-label input[type="checkbox"] {
             margin: 0;
@@ -1619,7 +1692,7 @@ try {
         }
         .toggle-switch-btn:hover {
             border-color: var(--md-primary);
-            background: #222;
+            background: var(--md-hover-bg);
         }
         .toggle-switch-badge {
             background: var(--md-primary);
@@ -1668,12 +1741,12 @@ try {
 
         .timer-bar-container {
             width: 100%;
-            background: #333;
+            background: var(--md-track);
             height: 10px;
             border-radius: 5px;
             overflow: hidden;
             margin-bottom: 1rem;
-            box-shadow: inset 0 1px 3px rgba(0,0,0,0.5);
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.25);
         }
         .timer-bar-fill {
             background: var(--md-success);
@@ -1690,7 +1763,7 @@ try {
             font-size: 1.05rem;
             line-height: 1.6;
             margin-bottom: 1.5rem;
-            color: #eceff1;
+            color: var(--md-on-surface);
         }
 
         .word-rating-item {
@@ -1765,12 +1838,12 @@ try {
         .filter-menu { position: relative; }
         .filter-trigger {
             display: inline-flex; align-items: center; gap: 8px; min-height: 42px; padding: 6px 14px;
-            border: 1px solid #454545; border-radius: 8px; background: #303030; color: var(--md-on-surface);
+            border: 1px solid var(--md-control-border); border-radius: 8px; background: var(--md-control-bg); color: var(--md-on-surface);
             cursor: pointer; list-style: none; font: inherit; font-size: 0.9rem; font-weight: 600; user-select: none;
         }
         .filter-trigger::-webkit-details-marker { display: none; }
-        .filter-trigger:hover, .filter-menu[open] .filter-trigger { background: #3a3a3a; border-color: #666; }
-        .filter-trigger:focus-visible { outline: 2px solid #90caf9; outline-offset: 2px; }
+        .filter-trigger:hover, .filter-menu[open] .filter-trigger { background: var(--md-control-hover); border-color: var(--md-control-border-hover); }
+        .filter-trigger:focus-visible { outline: 2px solid var(--md-accent-text); outline-offset: 2px; }
         .filter-menu[open] .account-chevron { margin-top: 4px; transform: rotate(225deg); }
         .filter-badge {
             display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px;
@@ -1780,8 +1853,8 @@ try {
         .filter-popover {
             position: absolute; z-index: 30; top: calc(100% + 8px); left: 0;
             width: min(640px, calc(100vw - 32px)); max-height: 70vh; overflow-y: auto;
-            padding: 14px; border: 1px solid #454545; border-radius: 8px;
-            background: #252525; box-shadow: var(--md-elevation-2);
+            padding: 14px; border: 1px solid var(--md-control-border); border-radius: 8px;
+            background: var(--md-popover-bg); box-shadow: var(--md-elevation-2);
         }
         .filter-group { padding: 4px 0 14px; border-bottom: 1px solid var(--md-border); margin-bottom: 12px; }
         .filter-group-title { margin: 0 0 10px; font-size: 0.85rem; font-weight: 600; color: var(--md-text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
@@ -1808,7 +1881,7 @@ try {
 
 <div class="modal-overlay" id="themaModalOverlay">
     <div class="modal-content">
-        <h3 style="margin-top:0; color: #90caf9;" id="modalTitle">Auflösung</h3>
+        <h3 style="margin-top:0; color: var(--md-accent-text);" id="modalTitle">Auflösung</h3>
         <div id="modalThemaText" style="margin: 16px 0; font-size: 0.95rem; line-height: 1.6; text-align: left;"></div>
         <div id="modalActionButtons" style="display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap;"></div>
         <button type="button" class="btn" onclick="closeThemaModal()" style="width: 100%;">Weiter 🚀</button>
@@ -1832,11 +1905,17 @@ try {
                         <span class="account-chevron" aria-hidden="true"></span>
                     </summary>
                     <div class="account-popover">
+                        <div class="account-menu-theme">
+                            <span class="theme-label-dark">Dunkel Mode</span>
+                            <span class="theme-label-light">Helles Mode</span>
+                            <?php theme_toggle(); ?>
+                        </div>
                         <div class="account-menu-identity">
                             <span class="account-menu-caption">Angemeldet als</span>
                             <strong><?= htmlspecialchars((string)(($_SESSION['display_name'] ?? '') ?: ($_SESSION['username'] ?? 'Benutzer')), ENT_QUOTES, 'UTF-8') ?></strong>
                         </div>
                         <a class="account-menu-item" href="profile.php">👤 Mein Profil</a>
+                        <a class="account-menu-item" href="community.php">👥 Community</a>
                         <button type="button" class="account-menu-item" onclick="document.getElementById('accountMenu').open = false; switchView('statistics');">📊 Statistiken</button>
                         <a class="account-menu-item" href="index.php?api=export_csv">📥 CSV exportieren</a>
                         <a class="account-menu-item account-menu-logout" href="logout.php">↪ Abmelden</a>
@@ -2140,7 +2219,7 @@ try {
                                     <td data-label="Wort" class="wort-cell <?= $artClass ?>"><?= htmlspecialchars($row['Wort'] ?? '') ?></td>
                                     <td data-label="Plural"><?= !$isVerb ? htmlspecialchars($row['Plural'] ?? '') : '' ?></td>
                                     <td data-label="Übersetzung">
-                                        <span class="story-word-trans" style="display: none; color: #90caf9;"><?= htmlspecialchars($row['Übersetzung'] ?? '') ?></span>
+                                        <span class="story-word-trans" style="display: none; color: var(--md-accent-text);"><?= htmlspecialchars($row['Übersetzung'] ?? '') ?></span>
                                         <button type="button" class="btn btn-secondary" style="padding: 2px 6px; font-size: 0.75rem; margin-top: 4px;" onclick="toggleStoryTransTable(this)">Übersetzung anzeigen</button>
                                     </td>
                                     <td data-label="Werkzeuge">
@@ -2277,7 +2356,7 @@ try {
             </div>
 
             <div id="gamePlayCard" style="display: none;">
-                <div id="gameNotice" style="background:#332701; color:#ffecb3; padding:12px; border-radius:8px; margin-bottom:1rem; font-size:0.85rem; border:1px solid #795548; display:none;"></div>
+                <div id="gameNotice" style="background: var(--md-notice-bg); color: var(--md-notice-text); padding:12px; border-radius:8px; margin-bottom:1rem; font-size:0.85rem; border: 1px solid var(--md-notice-border); display:none;"></div>
 
                 <div class="card">
                     <div style="display: flex; justify-content: space-between; align-items:center; font-size: 0.85rem; color: var(--md-text-muted); flex-wrap: wrap; gap: 6px;">
@@ -2291,9 +2370,9 @@ try {
                     <div style="text-align: center; margin-top: 15px;">
                         <span style="font-size: 0.8rem; text-transform: uppercase; color: var(--md-text-muted); letter-spacing: 1px;">Übersetzen oder erinnern:</span>
                         <div id="gameWordDisplay" class="word-display"></div>
-                        <div id="gameConjugationDisplay" style="font-size: 0.85rem; color: #b39ddb; margin-top: 2px; margin-bottom: 2px; display: none;"></div>
-                        <div id="gamePraepositionDisplay" style="font-size: 0.85rem; color: #ffb74d; margin-top: 2px; margin-bottom: 2px; display: none;"></div>
-                        <div id="gamePluralDisplay" style="font-size: 0.85rem; color: #90caf9; margin-top: 2px; margin-bottom: 15px; display: none;"></div>
+                        <div id="gameConjugationDisplay" style="font-size: 0.85rem; color: var(--md-text-purple); margin-top: 2px; margin-bottom: 2px; display: none;"></div>
+                        <div id="gamePraepositionDisplay" style="font-size: 0.85rem; color: var(--md-das); margin-top: 2px; margin-bottom: 2px; display: none;"></div>
+                        <div id="gamePluralDisplay" style="font-size: 0.85rem; color: var(--md-accent-text); margin-top: 2px; margin-bottom: 15px; display: none;"></div>
                     </div>
 
                     <div style="margin-bottom: 1.0rem; text-align: center;">
@@ -2301,14 +2380,14 @@ try {
                     </div>
 
                     <div id="detailsBox" class="details-box" style="display: none;">
-                        <p><strong>Übersetzung:</strong> <span id="gTrans" style="color: #90caf9; font-size: 1.1rem;"></span></p>
+                        <p><strong>Übersetzung:</strong> <span id="gTrans" style="color: var(--md-accent-text); font-size: 1.1rem;"></span></p>
 
                         <div id="imageDisplayContainer" style="margin: 12px 0; text-align: center;">
                             <img id="generatedImageTag" src="" alt="Wort Bild" onclick="openFullscreenImage(this.src)" style="max-width: 100%; max-height: 300px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); display: none; margin: 0 auto 10px auto;" title="Zum Vergrößern anklicken">
                             <button type="button" class="btn btn-info" onclick="generateAiImageForCurrentWord()" id="generateImageBtn" style="font-size: 0.8rem; padding: 6px 12px;">🤖 Bild generieren</button>
                         </div>
 
-                        <p><strong>Synonym:</strong> <span id="gSyn" style="color: #90caf9; font-size: 1.0rem;"></span></p>
+                        <p><strong>Synonym:</strong> <span id="gSyn" style="color: var(--md-accent-text); font-size: 1.0rem;"></span></p>
                         <p><strong>Externe Werkzeuge:</strong>
                             <a id="gSearchLink" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-secondary" style="padding: 2px 8px; font-size: 0.8rem; margin-left: 4px;">🔍 Google</a>
                             <a id="gTranslateLink" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-info" style="padding: 2px 8px; font-size: 0.8rem; margin-left: 4px;">🌐 Übersetzung</a>
@@ -2330,7 +2409,7 @@ try {
                         <div>
                             <button type="button" class="btn btn-info" onclick="suggestSentenceWithAI()" id="suggestSentenceBtn" style="width: 100%; margin-bottom: 8px;">💡 Satz vorschlagen</button>
                             <div id="aiSuggestionResult" style="display: none; background: var(--md-surface); border: 1px solid var(--md-border); padding: 12px; border-radius: 8px; font-size: 0.95rem; width: 100%;">
-                                <strong>Vorschlag:</strong> <div id="aiSuggestionText" style="color: #90caf9; margin-top: 4px; white-space: pre-wrap;"></div>
+                                <strong>Vorschlag:</strong> <div id="aiSuggestionText" style="color: var(--md-accent-text); margin-top: 4px; white-space: pre-wrap;"></div>
                             </div>
                         </div>
 
@@ -2347,7 +2426,7 @@ try {
                             </div>
 
                             <div id="aiCorrectionResult" style="display: none; background: var(--md-surface); border: 1px solid var(--md-border); padding: 12px; border-radius: 8px; font-size: 0.95rem; width: 100%; margin-top: 8px;">
-                                <strong>Korrektur:</strong> <div id="aiCorrectionText" style="color: #81c784; margin-top: 4px; white-space: pre-wrap;"></div>
+                                <strong>Korrektur:</strong> <div id="aiCorrectionText" style="color: var(--md-text-success); margin-top: 4px; white-space: pre-wrap;"></div>
                             </div>
                         </div>
                     </div>
@@ -2393,10 +2472,10 @@ try {
                         <div id="dmFeedbackText" style="font-size: 0.95rem; margin-bottom: 15px; white-space: pre-wrap; line-height: 1.5;"></div>
 
                         <div id="dmHiddenDetails" style="border-top: 1px solid var(--md-border); padding-top: 12px; display: none;">
-                            <h3 style="color: #90caf9; margin-top: 0; font-size: 1rem;">📚 Auflösung & Übersetzung</h3>
+                            <h3 style="color: var(--md-accent-text); margin-top: 0; font-size: 1rem;">📚 Auflösung & Übersetzung</h3>
                             <p><strong>Wort:</strong> <span id="dmResWord"></span></p>
                             <p><strong>Artikel:</strong> <span id="dmResArt"></span></p>
-                            <p><strong>Übersetzung:</strong> <span id="dmResTrans" style="color: #90caf9; font-weight: 600;"></span></p>
+                            <p><strong>Übersetzung:</strong> <span id="dmResTrans" style="color: var(--md-accent-text); font-weight: 600;"></span></p>
                             <p><strong>Beispiel:</strong> <em id="dmResEx"></em></p>
                             <button type="button" class="btn" onclick="fetchNextDeutschMeisterWord()" style="width: 100%; margin-top: 10px;">Nächste Aufgabe ➡️</button>
                         </div>
@@ -2415,7 +2494,7 @@ try {
                         <div style="display: flex; gap: 6px; align-items: center;">
                             <button onclick="openEditFromDdd()" class="btn btn-secondary" style="padding: 6px 10px; font-size: 0.75rem;">✏️ Wort bearbeiten</button>
                             <button onclick="deleteWordFromDdd()" class="btn btn-danger" style="padding: 6px 10px; font-size: 0.75rem;">🗑️ Wort löschen</button>
-                            <div id="dddStreakCounter" style="background: var(--md-surface-card); border: 1px solid var(--md-border); padding: 6px 14px; border-radius: 8px; font-weight: 600; color: #90caf9; font-size: 0.95rem;">
+                            <div id="dddStreakCounter" style="background: var(--md-surface-card); border: 1px solid var(--md-border); padding: 6px 14px; border-radius: 8px; font-weight: 600; color: var(--md-accent-text); font-size: 0.95rem;">
                                 🌱 Streak: <span id="dddStreakValue">0</span> / 10
                             </div>
                         </div>
@@ -2424,13 +2503,13 @@ try {
 
                     <div style="text-align: center; margin-top: 15px;">
                         <div id="dddWordDisplay" class="word-display" style="color: grey;">-</div>
-                        <div id="dddTranslationDisplay" style="font-size: 1.05rem; color: #90caf9; margin-top: 6px; margin-bottom: 15px; font-weight: 500; display: none;"></div>
+                        <div id="dddTranslationDisplay" style="font-size: 1.05rem; color: var(--md-accent-text); margin-top: 6px; margin-bottom: 15px; font-weight: 500; display: none;"></div>
                     </div>
 
                     <div style="display: flex; gap: 12px; justify-content: center; margin: 2rem 0;">
-                        <button type="button" class="btn" onclick="submitDerDieDasAnswer('der')" style="background-color: #64b5f6; flex: 1; padding: 16px; font-size: 1.1rem;">der</button>
-                        <button type="button" class="btn" onclick="submitDerDieDasAnswer('die')" style="background-color: #f06292; flex: 1; padding: 16px; font-size: 1.1rem;">die</button>
-                        <button type="button" class="btn" onclick="submitDerDieDasAnswer('das')" style="background-color: #ffb74d; flex: 1; padding: 16px; font-size: 1.1rem;">das</button>
+                        <button type="button" class="btn" onclick="submitDerDieDasAnswer('der')" style="background-color: var(--md-der); flex: 1; padding: 16px; font-size: 1.1rem;">der</button>
+                        <button type="button" class="btn" onclick="submitDerDieDasAnswer('die')" style="background-color: var(--md-die); flex: 1; padding: 16px; font-size: 1.1rem;">die</button>
+                        <button type="button" class="btn" onclick="submitDerDieDasAnswer('das')" style="background-color: var(--md-das); flex: 1; padding: 16px; font-size: 1.1rem;">das</button>
                     </div>
 
                     <div id="dddFeedbackContainer" style="display: none; background: var(--md-surface); border: 1px solid var(--md-border); padding: 16px; border-radius: 8px; margin-bottom: 1.5rem; text-align: center;">
@@ -2491,8 +2570,8 @@ try {
                     </div>
 
                     <div id="storyCorrectionResult" style="display: none; background: var(--md-surface); border: 1px solid var(--md-border); padding: 16px; border-radius: 8px; font-size: 0.95rem; margin-bottom: 1.5rem;">
-                        <strong style="color: #90caf9; display: block; margin-bottom: 8px;">KI-Korrektur & Feedback:</strong>
-                        <div id="storyCorrectionText" style="color: #eceff1; white-space: pre-wrap; line-height: 1.5;"></div>
+                        <strong style="color: var(--md-accent-text); display: block; margin-bottom: 8px;">KI-Korrektur & Feedback:</strong>
+                        <div id="storyCorrectionText" style="color: var(--md-on-surface); white-space: pre-wrap; line-height: 1.5;"></div>
                     </div>
 
                     <div style="text-align: center; border-top: 1px solid var(--md-border); padding-top: 1rem; margin-top: 1.5rem;">
@@ -3117,7 +3196,7 @@ function renderStatistics(stats) {
                 data: counts,
                 backgroundColor: backgroundColors,
                 borderWidth: 1,
-                borderColor: '#1e1e1e'
+                borderColor: cssVar('--md-surface')
             }]
         },
         options: {
@@ -3126,12 +3205,25 @@ function renderStatistics(stats) {
             plugins: {
                 legend: {
                     position: 'bottom',
-                    labels: { color: '#e0e0e0', font: { family: 'system-ui' } }
+                    labels: { color: cssVar('--md-on-surface'), font: { family: 'system-ui' } }
                 }
             }
         }
     });
 }
+
+// Read a CSS color variable of the current theme (used for Chart.js)
+function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+// Recolor the chart when the user switches light/dark mode
+document.addEventListener('themechange', () => {
+    if (!statusPieChartInstance) return;
+    statusPieChartInstance.data.datasets[0].borderColor = cssVar('--md-surface');
+    statusPieChartInstance.options.plugins.legend.labels.color = cssVar('--md-on-surface');
+    statusPieChartInstance.update();
+});
 
 // --- CHECKBOX BULK SELECT UTILITIES & STATUS PILL UI ---
 function toggleAllCheckboxes(containerId, checkState) {
@@ -3595,7 +3687,7 @@ function updateDddStreakUI() {
             subtitleEl.innerHTML = '💡 Guter Start! Die Serie baut sich auf.';
         } else {
             counterEl.style.background = 'var(--md-surface-card)';
-            counterEl.style.color = '#90caf9';
+            counterEl.style.color = 'var(--md-accent-text)';
             titleEl.innerHTML = '🎯 Der-Die-Das Training';
             subtitleEl.innerHTML = 'Rate den richtigen Artikel für dieses Aktiva-Wort! (10 in Folge = Super Booster 🚀)';
         }
@@ -3699,10 +3791,10 @@ async function submitDerDieDasAnswer(guessedArtikel) {
             const transDisplay = document.getElementById('dddTranslationDisplay');
             const correctArt = data.correct_artikel;
 
-            if (correctArt === 'der') wordDisplay.style.color = '#64b5f6';
-            else if (correctArt === 'die') wordDisplay.style.color = '#f06292';
-            else if (correctArt === 'das') wordDisplay.style.color = '#ffb74d';
-            else wordDisplay.style.color = '#b0b0b0';
+            if (correctArt === 'der') wordDisplay.style.color = 'var(--md-der)';
+            else if (correctArt === 'die') wordDisplay.style.color = 'var(--md-die)';
+            else if (correctArt === 'das') wordDisplay.style.color = 'var(--md-das)';
+            else wordDisplay.style.color = 'var(--md-article-other)';
 
             if (currentDerDieDasWord.Übersetzung) {
                 transDisplay.textContent = `Übersetzung: ${currentDerDieDasWord.Übersetzung}`;
@@ -3786,11 +3878,11 @@ async function checkDddSentence() {
                 } else {
                     msg = `<br><br>✅ Grammatikalisch korrekt! (Zwar nicht perfekt idiomatisch, daher +${data.points_added} Punkt vergeben).`;
                 }
-                correctionEl.innerHTML = `<span style="color: #81c784;">${parseMarkdown(data.correction)}</span>` + `<div style="color: #90caf9; font-weight: bold;">${msg}</div>`;
+                correctionEl.innerHTML = `<span style="color: var(--md-text-success);">${parseMarkdown(data.correction)}</span>` + `<div style="color: var(--md-accent-text); font-weight: bold;">${msg}</div>`;
                 todayReviewedCount++;
                 updateDailyTrackerUI();
             } else {
-                correctionEl.innerHTML = `<span style="color: #e53935; font-weight: bold;">⚠️ Der Satz enthält Grammatikfehler (+1 Punkt gutgeschrieben).</span><br><br><span style="color: #e0e0e0;">${parseMarkdown(data.correction)}</span>`;
+                correctionEl.innerHTML = `<span style="color: #e53935; font-weight: bold;">⚠️ Der Satz enthält Grammatikfehler (+1 Punkt gutgeschrieben).</span><br><br><span style="color: var(--md-on-surface);">${parseMarkdown(data.correction)}</span>`;
                 todayReviewedCount++;
                 updateDailyTrackerUI();
             }
@@ -3894,7 +3986,7 @@ function renderStoryWriter(data) {
                 <div>
                     <span class="${artClass}" style="font-size: 1.1rem; font-weight: 600;">${escapeHtml(wordObj.Wort)}</span>
                     <div style="margin-top: 6px;">
-                        <span class="story-word-trans" style="font-size: 0.95rem; color: #90caf9; display: none;">${escapeHtml(wordObj.Übersetzung || 'Keine Übersetzung')}</span>
+                        <span class="story-word-trans" style="font-size: 0.95rem; color: var(--md-accent-text); display: none;">${escapeHtml(wordObj.Übersetzung || 'Keine Übersetzung')}</span>
                         <button type="button" class="btn btn-secondary" style="padding: 2px 6px; font-size: 0.75rem;" onclick="toggleStoryTrans(this)">Übersetzung anzeigen</button>
                     </div>
                 </div>
@@ -4016,7 +4108,7 @@ function renderStoryGame(data) {
                 <div>
                     <span class="${artClass}" style="font-size: 1.1rem; font-weight: 600;">${escapeHtml(wordObj.Wort)}</span>
                     <div style="margin-top: 6px;">
-                        <span class="story-word-trans" style="font-size: 0.95rem; color: #90caf9; display: none;">${escapeHtml(wordObj.Übersetzung || 'Keine Übersetzung')}</span>
+                        <span class="story-word-trans" style="font-size: 0.95rem; color: var(--md-accent-text); display: none;">${escapeHtml(wordObj.Übersetzung || 'Keine Übersetzung')}</span>
                         <button type="button" class="btn btn-secondary" style="padding: 2px 6px; font-size: 0.75rem;" onclick="toggleStoryTrans(this)">Übersetzung anzeigen</button>
                     </div>
                 </div>
@@ -4626,11 +4718,11 @@ async function checkStandardSentenceBooster() {
                 } else {
                     msg = `<br><br>✅ Grammatikalisch korrekt! (Zwar nicht perfekt idiomatisch, daher +${data.points_added} Punkt vergeben).`;
                 }
-                correctionTextEl.innerHTML = `<span style="color: #81c784;">${parseMarkdown(data.correction)}</span>` + `<div style="color: #90caf9; font-weight: bold; margin-top: 8px;">${msg}</div>`;
+                correctionTextEl.innerHTML = `<span style="color: var(--md-text-success);">${parseMarkdown(data.correction)}</span>` + `<div style="color: var(--md-accent-text); font-weight: bold; margin-top: 8px;">${msg}</div>`;
                 todayReviewedCount++;
                 updateDailyTrackerUI();
             } else {
-                correctionTextEl.innerHTML = `<span style="color: #e53935; font-weight: bold;">⚠️ Der Satz enthält Grammatikfehler (+1 Punkt gutgeschrieben).</span><br><br><span style="color: #e0e0e0;">${parseMarkdown(data.correction)}</span>`;
+                correctionTextEl.innerHTML = `<span style="color: #e53935; font-weight: bold;">⚠️ Der Satz enthält Grammatikfehler (+1 Punkt gutgeschrieben).</span><br><br><span style="color: var(--md-on-surface);">${parseMarkdown(data.correction)}</span>`;
                 todayReviewedCount++;
                 updateDailyTrackerUI();
             }
@@ -4845,7 +4937,7 @@ function renderTable(words) {
             <td data-label="Wort" class="wort-cell ${artClass}">${escapeHtml(row.Wort || '')}</td>
             <td data-label="Plural">${!isVerb ? escapeHtml(row.Plural || '') : ''}</td>
             <td data-label="Übersetzung">
-                <span class="story-word-trans" style="display: none; color: #90caf9;">${escapeHtml(row.Übersetzung || '')}</span>
+                <span class="story-word-trans" style="display: none; color: var(--md-accent-text);">${escapeHtml(row.Übersetzung || '')}</span>
                 <button type="button" class="btn btn-secondary" style="padding: 2px 6px; font-size: 0.75rem; margin-top: 4px;" onclick="toggleStoryTransTable(this)">Übersetzung anzeigen</button>
             </td>
             <td data-label="Werkzeuge">
