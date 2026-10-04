@@ -16,7 +16,6 @@ if (!empty($_SESSION['logged_in']) && !empty($_SESSION['user_id'])) {
 }
 
 require_once 'db.php';
-require_once 'theme.php';
 
 $error = '';
 
@@ -62,17 +61,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <?php theme_head(); ?>
     <title>MeineWortschatz - Login</title>
     <style>
+        /* Login page is always dark */
         :root {
-            --primary: #2563eb;
-            --primary-dark: #1d4ed8;
-            --bg-color: #f1f5f9;
-            --card-bg: #ffffff;
-            --text-main: #1e293b;
-            --border-color: #cbd5e1;
-            --danger: #ef4444;
+            color-scheme: dark;
+            --primary: #1e88e5;
+            --primary-dark: #1565c0;
+            --bg-color: #121212;
+            --card-bg: #1e1e1e;
+            --input-bg: #252525;
+            --text-main: #e0e0e0;
+            --text-muted: #a0a0a0;
+            --border-color: #383838;
+            --input-border: #555555;
+            --danger-bg: #3b1d1d;
+            --danger-border: #5c2b2b;
+            --danger-text: #ffb4ab;
         }
         * { box-sizing: border-box; }
         body {
@@ -93,19 +98,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             padding: 30px;
             width: 100%;
             max-width: 400px;
-            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
         }
-        h1 { font-size: 1.4rem; margin-top: 0; text-align: center; }
+        h1 { font-size: 1.4rem; margin-top: 0; text-align: center; color: #90caf9; }
         label { display: block; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.3rem; }
         input {
             width: 100%;
             padding: 10px 12px;
-            border: 1px solid var(--border-color);
+            border: 1px solid var(--input-border);
             border-radius: 6px;
             margin-bottom: 1rem;
             font-size: 1rem;
+            background: var(--input-bg);
+            color: var(--text-main);
         }
-        input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15); }
+        input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(30, 136, 229, 0.25); }
         .btn {
             display: block;
             background-color: var(--primary);
@@ -123,13 +130,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .btn:hover { background-color: var(--primary-dark); }
         .btn-google {
             margin-top: 10px;
-            background: #fff;
+            background: var(--input-bg);
             color: var(--text-main);
-            border: 1px solid var(--border-color);
+            border: 1px solid var(--input-border);
         }
-        .btn-google:hover { background: #f8fafc; }
-        .divider { text-align: center; color: #64748b; font-size: 0.8rem; margin: 14px 0 4px; }
-        .error { background: #fee2e2; color: var(--danger); padding: 10px; border-radius: 6px; margin-bottom: 1rem; font-size: 0.85rem; text-align: center; border: 1px solid #fca5a5; }
+        .btn-google:hover { background: #303030; }
+        .divider { text-align: center; color: var(--text-muted); font-size: 0.8rem; margin: 14px 0 4px; }
+        .error { background: var(--danger-bg); color: var(--danger-text); padding: 10px; border-radius: 6px; margin-bottom: 1rem; font-size: 0.85rem; text-align: center; border: 1px solid var(--danger-border); }
     </style>
 </head>
 <body>

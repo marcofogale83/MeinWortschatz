@@ -111,6 +111,34 @@ function e(string $s): string {
             --success-text: #a8e6cf;
             --info-bg: #1a2a3a;
             --info-text: #90caf9;
+            --accent: #90caf9;
+            --neutral-btn: #414141;
+            --neutral-btn-hover: #505050;
+            --neutral-btn-text: #ffffff;
+            --input-border: #555555;
+            --row-border: #2c2c2c;
+        }
+
+        /* ===== Light theme ===== */
+        :root[data-theme="light"] {
+            --bg: #f4f6f8;
+            --surface: #ffffff;
+            --surface-raised: #f8f9fb;
+            --text: #1f2933;
+            --muted: #5f6b7a;
+            --border: #dde2e8;
+            --danger-bg: #fdecea;
+            --danger-text: #b3261e;
+            --success-bg: #e6f4f1;
+            --success-text: #00695c;
+            --info-bg: #e3f2fd;
+            --info-text: #1565c0;
+            --accent: #1565c0;
+            --neutral-btn: #e3e7ec;
+            --neutral-btn-hover: #d0d6dd;
+            --neutral-btn-text: #1f2933;
+            --input-border: #c5ccd4;
+            --row-border: #eef1f4;
         }
         * { box-sizing: border-box; }
         body {
@@ -134,8 +162,8 @@ function e(string $s): string {
             border: 1px solid var(--border);
             border-radius: 8px;
         }
-        h1 { margin: 0; color: #90caf9; font-size: 1.35rem; font-weight: 600; }
-        .back-link, .submit-button {
+        h1 { margin: 0; color: var(--accent); font-size: 1.35rem; font-weight: 600; }
+        .submit-button {
             display: inline-flex;
             align-items: center;
             justify-content: center;
@@ -149,8 +177,21 @@ function e(string $s): string {
             text-decoration: none;
             cursor: pointer;
         }
-        .back-link { background: #414141; }
-        .back-link:hover { background: #505050; }
+        .header-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+        .back-icon {
+            display: inline-grid; place-items: center; flex-shrink: 0;
+            width: 40px; height: 40px; border-radius: 50%;
+            color: var(--muted); text-decoration: none;
+            transition: background-color 0.15s, color 0.15s;
+        }
+        .back-icon svg { width: 22px; height: 22px; }
+        .back-icon:hover { background: var(--neutral-btn); color: var(--accent); }
+        .back-icon:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .header-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-left: auto; }
+        .theme-switch { display: inline-flex; align-items: center; gap: 8px; font-size: 0.9rem; font-weight: 600; color: var(--muted); }
+        .theme-label-light { display: none; }
+        :root[data-theme="light"] .theme-label-dark { display: none; }
+        :root[data-theme="light"] .theme-label-light { display: inline; }
         .profile-section {
             padding: 22px;
             background: var(--surface);
@@ -166,7 +207,7 @@ function e(string $s): string {
             gap: 16px;
             padding: 12px 0;
         }
-        .account-row + .account-row { border-top: 1px solid #2c2c2c; }
+        .account-row + .account-row { border-top: 1px solid var(--row-border); }
         .account-row span:first-child { color: var(--muted); }
         .account-row strong { overflow-wrap: anywhere; text-align: right; }
         label { display: block; margin-bottom: 7px; font-size: 0.9rem; font-weight: 600; }
@@ -175,7 +216,7 @@ function e(string $s): string {
             min-height: 44px;
             margin-bottom: 16px;
             padding: 10px 12px;
-            border: 1px solid #555;
+            border: 1px solid var(--input-border);
             border-radius: 6px;
             background: var(--surface-raised);
             color: var(--text);
@@ -191,8 +232,7 @@ function e(string $s): string {
         .info { background: var(--info-bg); color: var(--info-text); }
         .info a { color: var(--info-text); }
         @media (max-width: 520px) {
-            header { align-items: flex-start; }
-            .back-link { width: 100%; }
+            header { padding: 12px 14px; }
             .profile-section { padding: 18px 16px; }
             .submit-button { width: 100%; }
         }
@@ -201,8 +241,19 @@ function e(string $s): string {
 <body>
 <main class="container">
     <header>
-        <h1>👤 Mein Profil</h1>
-        <a class="back-link" href="index.php">Zurück zum Wortschatz</a>
+        <div class="header-title">
+            <a class="back-icon" href="index.php" title="Zurück zum Wortschatz" aria-label="Zurück zum Wortschatz">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+            </a>
+            <h1>👤 Mein Profil</h1>
+        </div>
+        <div class="header-actions">
+            <div class="theme-switch">
+                <span class="theme-label-dark">Dunkel Mode</span>
+                <span class="theme-label-light">Helles Mode</span>
+                <?php theme_toggle(); ?>
+            </div>
+        </div>
     </header>
 
     <section class="profile-section" aria-labelledby="profile-heading">

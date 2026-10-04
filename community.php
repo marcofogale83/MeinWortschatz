@@ -110,7 +110,7 @@ if (empty($_SESSION['logged_in']) || $uid <= 0) {
         h2 { margin: 0 0 6px; font-size: 1.05rem; }
         h3 { margin: 0 0 12px; font-size: 0.98rem; color: var(--muted); font-weight: 600; }
 
-        .btn, .back-link {
+        .btn {
             display: inline-flex;
             align-items: center;
             justify-content: center;
@@ -128,8 +128,17 @@ if (empty($_SESSION['logged_in']) || $uid <= 0) {
         }
         .btn:hover { background: var(--primary-hover); }
         .btn:disabled { opacity: 0.6; cursor: default; }
-        .back-link, .btn-secondary { background: var(--neutral-btn); color: var(--neutral-btn-text); }
-        .back-link:hover, .btn-secondary:hover { background: var(--neutral-btn-hover); }
+        .btn-secondary { background: var(--neutral-btn); color: var(--neutral-btn-text); }
+        .btn-secondary:hover { background: var(--neutral-btn-hover); }
+        .header-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+        .back-icon {
+            display: inline-grid; place-items: center; flex-shrink: 0;
+            width: 40px; height: 40px; border-radius: 50%;
+            color: var(--muted); text-decoration: none;
+            transition: background-color 0.15s, color 0.15s;
+        }
+        .back-icon svg { width: 22px; height: 22px; }
+        .back-icon:hover { background: var(--neutral-btn); color: var(--accent); }
         .btn-danger { background: var(--danger-bg); color: var(--danger-text); }
         .btn-danger:hover { background: var(--danger-hover); }
         .btn-small { min-height: 34px; padding: 6px 11px; font-size: 0.88rem; }
@@ -369,14 +378,18 @@ if (empty($_SESSION['logged_in']) || $uid <= 0) {
 <body>
 <main class="container">
     <header>
-        <h1>👥 Community</h1>
+        <div class="header-title">
+            <a class="back-icon" href="index.php" title="Zurück zum Wortschatz" aria-label="Zurück zum Wortschatz">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+            </a>
+            <h1>👥 Community</h1>
+        </div>
         <div class="header-actions">
             <div class="theme-switch">
                 <span class="theme-label-dark">Dunkel Mode</span>
                 <span class="theme-label-light">Helles Mode</span>
                 <?php theme_toggle(); ?>
             </div>
-            <a class="back-link" href="index.php">Zurück zum Wortschatz</a>
         </div>
     </header>
 

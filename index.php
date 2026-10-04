@@ -1358,7 +1358,7 @@ try {
             box-shadow: var(--md-elevation-1); margin-bottom: 1.5rem; flex-wrap: wrap; gap: 10px;
             border: 1px solid var(--md-border);
         }
-        .header-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+        .header-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-left: auto; }
         .account-menu { position: relative; }
         .account-trigger {
             display: inline-flex; align-items: center; gap: 9px; min-height: 42px;
@@ -1380,7 +1380,8 @@ try {
         }
         .account-menu[open] .account-chevron { margin-top: 4px; transform: rotate(225deg); }
         .account-popover {
-            position: absolute; z-index: 30; top: calc(100% + 8px); right: 0; width: 240px;
+            position: absolute; z-index: 30; top: calc(100% + 8px); right: 0; width: min(240px, calc(100vw - 32px));
+            max-height: calc(100vh - 120px); overflow-y: auto;
             padding: 8px; border: 1px solid var(--md-control-border); border-radius: 8px;
             background: var(--md-popover-bg); box-shadow: var(--md-elevation-2);
         }
@@ -1399,6 +1400,26 @@ try {
         :root[data-theme="light"] .theme-label-light { display: inline; }
         .account-menu-logout { color: var(--md-logout-text); }
         .account-menu-logout:hover { background: var(--md-logout-hover); }
+        .header-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+        .back-icon {
+            display: inline-grid; place-items: center; flex-shrink: 0;
+            width: 40px; height: 40px; padding: 0; border: 0; border-radius: 50%;
+            background: transparent; color: var(--md-text-muted); cursor: pointer;
+            transition: background-color 0.15s, color 0.15s;
+        }
+        .back-icon svg { width: 22px; height: 22px; }
+        .back-icon:hover { background: var(--md-control-hover); color: var(--md-accent-text); }
+        .back-icon:focus-visible { outline: 2px solid var(--md-accent-text); outline-offset: 2px; }
+        @media (max-width: 600px) {
+            .container { padding: 16px 12px; }
+            header { padding: 10px 12px; flex-wrap: nowrap; }
+            header h1 { font-size: 1.15rem; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .header-actions { flex-shrink: 0; }
+            .account-trigger { padding: 5px 10px 5px 5px; gap: 7px; }
+        }
+        @media (max-width: 360px) {
+            .account-trigger .account-label { display: none; }
+        }
         h1 { font-size: 1.5rem; font-weight: 500; margin: 0; color: var(--md-accent-text); display: flex; align-items: center; gap: 8px; }
         h2 { font-size: 1.15rem; font-weight: 500; margin: 0 0 1rem 0; color: var(--md-on-surface); }
 
@@ -1901,7 +1922,7 @@ try {
                 <details class="account-menu" id="accountMenu">
                     <summary class="account-trigger">
                         <span class="account-avatar" aria-hidden="true">👤</span>
-                        <span>Konto</span>
+                        <span class="account-label">Konto</span>
                         <span class="account-chevron" aria-hidden="true"></span>
                     </summary>
                     <div class="account-popover">
@@ -2607,8 +2628,12 @@ try {
     <div id="statistics-view" class="view">
         <div class="stats-container">
             <header>
-                <h1>📊 Wortschatz-Statistiken</h1>
-                <button onclick="switchView('dashboard')" class="btn btn-secondary" style="padding: 8px 14px; font-size: 0.85rem;">🚪 Dashboard</button>
+                <div class="header-title">
+                    <button type="button" class="back-icon" onclick="switchView('dashboard')" title="Zurück zum Dashboard" aria-label="Zurück zum Dashboard">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+                    </button>
+                    <h1>📊 Wortschatz-Statistiken</h1>
+                </div>
             </header>
 
             <div class="card">
