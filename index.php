@@ -1745,7 +1745,7 @@ try {
                     <div class="account-popover">
                         <div class="account-menu-identity">
                             <span class="account-menu-caption">Angemeldet als</span>
-                            <strong><?= htmlspecialchars((string)($_SESSION['username'] ?? 'Benutzer'), ENT_QUOTES, 'UTF-8') ?></strong>
+                            <strong><?= htmlspecialchars((string)(($_SESSION['display_name'] ?? '') ?: ($_SESSION['username'] ?? 'Benutzer')), ENT_QUOTES, 'UTF-8') ?></strong>
                         </div>
                         <a class="account-menu-item" href="profile.php">👤 Mein Profil</a>
                         <a class="account-menu-item account-menu-logout" href="logout.php">↪ Abmelden</a>
