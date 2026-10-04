@@ -1468,7 +1468,7 @@ try {
         .view.active { display: block; }
         .form-container { display: none; margin-bottom: 1.5rem; }
         .form-container.active { display: block; }
-        .form-toggle-bar { margin-bottom: 1.2rem; }
+        .form-toggle-bar { margin-bottom: 1.2rem; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 
         .game-container { max-width: 800px; margin: 0 auto; }
 
@@ -1825,7 +1825,6 @@ try {
         <header>
             <h1>📚 Mein Wortschatz</h1>
             <div class="header-actions">
-                <button onclick="openGameSelection()" class="btn btn-success">🎮 Spiel starten</button>
                 <details class="account-menu" id="accountMenu">
                     <summary class="account-trigger">
                         <span class="account-avatar" aria-hidden="true">👤</span>
@@ -1863,6 +1862,7 @@ try {
 
         <div class="form-toggle-bar" id="formToggleBar">
             <button type="button" class="btn" onclick="openAddForm()" id="formToggleBtn">➕ Neues Wort hinzufügen</button>
+            <button type="button" class="btn btn-success" onclick="openGameSelection()">🎯 Training starten</button>
         </div>
 
         <div class="form-container" id="formContainer">
@@ -2178,20 +2178,20 @@ try {
     <div id="game-view" class="view">
         <div class="game-container">
             <header>
-                <h1>🎮 Vokabelspiel</h1>
+                <h1>🎯 Vokabeltraining</h1>
                 <button onclick="switchView('dashboard')" class="btn btn-secondary" style="padding: 8px 14px; font-size: 0.85rem;">🚪 Dashboard</button>
             </header>
 
             <div id="gameSetupCard" class="card">
-                <h2>Spieleinstellungen</h2>
+                <h2>Trainingseinstellungen</h2>
                 <form id="gameSetupForm" onsubmit="startGameSession(event)">
-                    <label for="gameModeSelect">Spielemodus auswählen:</label>
+                    <label for="gameModeSelect">Trainingsmodus auswählen:</label>
                     <select id="gameModeSelect" name="game_mode" style="margin-bottom: 1.2rem;" onchange="onGameModeChange()">
                         <option value="standard">Standard Vokabeltrainer</option>
-                        <option value="der_die_das">Der-Die-Das Spiel</option>
+                        <option value="der_die_das">Der-Die-Das Training</option>
                         <option value="deutsch_meister">Deutsch Meister</option>
                         <option value="ai_story">KI-Geschichte (lesen)</option>
-                        <option value="ai_story_writer">KI-Geschichtenspiel (selbst schreiben)</option>
+                        <option value="ai_story_writer">KI-Geschichtentraining (selbst schreiben)</option>
                         <option value="quiz">Multiple-Choice Übersetzung Quiz</option>
                     </select>
 
@@ -2365,7 +2365,7 @@ try {
                     </div>
 
                     <div style="text-align: center; margin-top: 1.5rem; border-top: 1px solid var(--md-border); padding-top: 1rem;">
-                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Spieleinstellungen ändern</button>
+                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Trainingseinstellungen ändern</button>
                     </div>
                 </div>
             </div>
@@ -2403,7 +2403,7 @@ try {
                     </div>
 
                     <div style="text-align: center; border-top: 1px solid var(--md-border); padding-top: 1rem; margin-top: 1.5rem;">
-                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Spieleinstellungen ändern</button>
+                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Trainingseinstellungen ändern</button>
                     </div>
                 </div>
             </div>
@@ -2411,7 +2411,7 @@ try {
             <div id="derDieDasPlayCard" style="display: none;">
                 <div class="card">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 8px;">
-                        <h2 style="margin: 0;" id="dddGameTitle">🎯 Der-Die-Das Spiel</h2>
+                        <h2 style="margin: 0;" id="dddGameTitle">🎯 Der-Die-Das Training</h2>
                         <div style="display: flex; gap: 6px; align-items: center;">
                             <button onclick="openEditFromDdd()" class="btn btn-secondary" style="padding: 6px 10px; font-size: 0.75rem;">✏️ Wort bearbeiten</button>
                             <button onclick="deleteWordFromDdd()" class="btn btn-danger" style="padding: 6px 10px; font-size: 0.75rem;">🗑️ Wort löschen</button>
@@ -2450,7 +2450,7 @@ try {
                     </div>
 
                     <div style="text-align: center; border-top: 1px solid var(--md-border); padding-top: 1rem; margin-top: 1.5rem;">
-                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Spieleinstellungen ändern</button>
+                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Trainingseinstellungen ändern</button>
                     </div>
                 </div>
             </div>
@@ -2465,14 +2465,14 @@ try {
 
                     <div style="text-align: center; margin-top: 1.5rem; border-top: 1px solid var(--md-border); padding-top: 1rem; display: flex; gap: 10px; flex-wrap: wrap;">
                         <button type="button" onclick="loadNewStory()" class="btn btn-success" style="flex: 1; min-width: 200px;">Nächste Geschichte generieren 🔄</button>
-                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Spieleinstellungen ändern</button>
+                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Trainingseinstellungen ändern</button>
                     </div>
                 </div>
             </div>
 
             <div id="aiStoryWriterPlayCard" style="display: none;">
                 <div class="card">
-                    <h2 style="text-align: center; margin-bottom: 0.5rem;">✍️ KI-Geschichtenspiel (Selbst schreiben)</h2>
+                    <h2 style="text-align: center; margin-bottom: 0.5rem;">✍️ KI-Geschichtentraining (Selbst schreiben)</h2>
                     <p style="text-align: center; color: var(--md-text-muted); font-size: 0.9rem; margin-bottom: 1.5rem;">Schreibe eine Geschichte, die alle 5 vorgegebenen Wörter enthält, und lasse sie von der KI korrigieren!</p>
 
                     <div style="margin-bottom: 1rem;">
@@ -2496,7 +2496,7 @@ try {
                     </div>
 
                     <div style="text-align: center; border-top: 1px solid var(--md-border); padding-top: 1rem; margin-top: 1.5rem;">
-                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Spieleinstellungen ändern</button>
+                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Trainingseinstellungen ändern</button>
                     </div>
                 </div>
             </div>
@@ -2518,7 +2518,7 @@ try {
                     <div class="quiz-grid" id="quizGrid"></div>
 
                     <div style="text-align: center; margin-top: 1.5rem; border-top: 1px solid var(--md-border); padding-top: 1rem;">
-                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Spieleinstellungen ändern</button>
+                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Trainingseinstellungen ändern</button>
                     </div>
                 </div>
             </div>
@@ -3313,7 +3313,7 @@ function onGameModeChange() {
     if (mode === 'ai_story' || mode === 'ai_story_writer') {
         stdOptions.style.display = 'block';
         statusGroup.style.display = 'block';
-        statusLabel.textContent = 'Status für KI-Spiel auswählen';
+        statusLabel.textContent = 'Status für KI-Training auswählen';
     } else if (mode === 'quiz' || mode === 'standard') {
         stdOptions.style.display = (mode === 'standard') ? 'block' : 'none';
         statusGroup.style.display = 'block';
@@ -3596,7 +3596,7 @@ function updateDddStreakUI() {
         } else {
             counterEl.style.background = 'var(--md-surface-card)';
             counterEl.style.color = '#90caf9';
-            titleEl.innerHTML = '🎯 Der-Die-Das Spiel';
+            titleEl.innerHTML = '🎯 Der-Die-Das Training';
             subtitleEl.innerHTML = 'Rate den richtigen Artikel für dieses Aktiva-Wort! (10 in Folge = Super Booster 🚀)';
         }
     }
@@ -3866,7 +3866,7 @@ async function fetchNewStoryWriter() {
         currentWriterData = data;
         renderStoryWriter(data);
     } catch (err) {
-        console.error('Fehler beim Laden der Wörter für das Schreibspiel', err);
+        console.error('Fehler beim Laden der Wörter für das Schreibtraining', err);
         document.getElementById('writerWordsList').innerHTML = '<span style="color: var(--md-danger);">Netzwerkfehler beim Laden der Wörter.</span>';
     }
 }
@@ -4961,7 +4961,7 @@ function resetForm() {
     document.getElementById('formTitle').textContent = 'Neues Wort hinzufügen';
     document.getElementById('formSubmitBtn').textContent = 'Wort speichern';
     document.getElementById('formContainer').classList.remove('active');
-    document.getElementById('formToggleBar').style.display = 'block';
+    document.getElementById('formToggleBar').style.display = '';
 }
 
 function editWord(row) {
