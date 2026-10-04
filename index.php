@@ -1672,6 +1672,7 @@ try {
                 <button onclick="openGameSelection()" class="btn btn-success">🎮 Spiel starten</button>
                 <button onclick="switchView('statistics')" class="btn btn-info">📊 Statistiken</button>
                 <a href="index.php?api=export_csv" class="btn btn-secondary">📥 CSV exportieren</a>
+                <a href="profile.php" class="btn btn-secondary">👤 Profil</a>
                 <a href="logout.php" class="btn btn-danger" style="padding: 8px 14px; font-size: 0.85rem;">🚪 Abmelden</a>
             </div>
         </header>
