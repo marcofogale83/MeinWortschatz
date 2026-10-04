@@ -174,26 +174,33 @@ if (isset($_GET['api'])) {
         $output = fopen('php://output', 'w');
         fprintf($output, chr(0xEF).chr(0xBB).chr(0xBF));
 
-        $stmt = userQuery($pdo, "SELECT * FROM meine_wortschatz WHERE user_id = ? ORDER BY Wort ASC", [$uid]);
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        // Only the useful vocabulary columns. Never SELECT * here: image_data
+        // holds large base64 images and would blow the PHP memory limit.
+        $exportCols = [
+            'Wort', 'Artikel', 'Plural', 'Übersetzung', 'Wortarten', 'Thema',
+            'Beispiel', 'synonym', 'VerbFlag', 'Konjugation', 'grundverb', 'praefix',
+            'praeposition_kollokation', 'sharepoint_list', 'Status', 'Score',
+            'NachsteUbungDatum', 'Created', 'Modified',
+        ];
+        $colSql = implode(', ', array_map(fn($c) => "`$c`", $exportCols));
 
-        if (!empty($rows)) {
-            // image_data (huge base64) is excluded from the export
-            $header = array_values(array_filter(array_keys($rows[0]), fn($k) => !in_array($k, ['image_data', 'user_id'], true)));
-            fputcsv($output, $header, ';', '"', '\\');
-            foreach ($rows as $row) {
-                if (isset($row['VerbFlag'])) {
-                    $row['VerbFlag'] = (int)$row['VerbFlag'] === 1 ? 1 : 0;
-                }
-                unset($row['image_data'], $row['user_id']);
+        fputcsv($output, $exportCols, ';', '"', '\\');
+
+        $stmt = userQuery($pdo, "SELECT $colSql FROM meine_wortschatz WHERE user_id = ? ORDER BY Wort ASC", [$uid]);
+
+        // Stream row by row instead of fetchAll()
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $row['VerbFlag'] = (int)($row['VerbFlag'] ?? 0) === 1 ? 1 : 0;
+            $line = [];
+            foreach ($exportCols as $c) {
+                $v = $row[$c] ?? '';
                 // Prevent CSV/Excel formula injection
-                foreach ($row as $k => $v) {
-                    if (is_string($v) && $v !== '' && in_array($v[0], ['=', '+', '-', '@'], true)) {
-                        $row[$k] = "'" . $v;
-                    }
+                if (is_string($v) && $v !== '' && in_array($v[0], ['=', '+', '-', '@'], true)) {
+                    $v = "'" . $v;
                 }
-                fputcsv($output, $row, ';', '"', '\\');
+                $line[] = $v;
             }
+            fputcsv($output, $line, ';', '"', '\\');
         }
 
         fclose($output);
