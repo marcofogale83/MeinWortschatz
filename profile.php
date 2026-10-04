@@ -11,7 +11,8 @@ session_set_cookie_params([
 ]);
 session_start();
 
-if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true || empty($_SESSION['username'])) {
+$uid = (int)($_SESSION['user_id'] ?? 0);
+if (empty($_SESSION['logged_in']) || $uid <= 0) {
     header('Location: login.php');
     exit;
 }
@@ -22,13 +23,14 @@ if (empty($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 
-$username = (string)$_SESSION['username'];
 $error = '';
 $success = '';
+$user = null;
+$isGoogleOnly = false;
 
 try {
-    $stmt = $pdo->prepare('SELECT username, password FROM users WHERE username = ? LIMIT 1');
-    $stmt->execute([$username]);
+    $stmt = $pdo->prepare('SELECT id, username, email, display_name, password, google_sub FROM users WHERE id = ? LIMIT 1');
+    $stmt->execute([$uid]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$user) {
@@ -38,6 +40,9 @@ try {
         exit;
     }
 
+    // Accounts created via Google have no password: nothing to change here
+    $isGoogleOnly = empty($user['password']);
+
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $csrfToken = $_POST['csrf_token'] ?? '';
         $currentPassword = $_POST['current_password'] ?? '';
@@ -46,6 +51,9 @@ try {
 
         if (!is_string($csrfToken) || !hash_equals($_SESSION['csrf_token'], $csrfToken)) {
             $error = 'Die Anfrage ist abgelaufen. Bitte laden Sie die Seite neu und versuchen Sie es erneut.';
+        } elseif ($isGoogleOnly) {
+            // Server-side block, even if someone sends the form manually
+            $error = 'Dieses Konto verwendet die Google-Anmeldung. Das Passwort wird bei Google verwaltet.';
         } elseif (!is_string($currentPassword) || !password_verify($currentPassword, $user['password'])) {
             $error = 'Das aktuelle Passwort ist nicht korrekt.';
         } elseif (!is_string($newPassword) || strlen($newPassword) < 12) {
@@ -58,8 +66,8 @@ try {
             $error = 'Das neue Passwort muss sich vom aktuellen Passwort unterscheiden.';
         } else {
             $newHash = password_hash($newPassword, PASSWORD_DEFAULT);
-            $update = $pdo->prepare('UPDATE users SET password = ? WHERE username = ?');
-            $update->execute([$newHash, $username]);
+            $update = $pdo->prepare('UPDATE users SET password = ? WHERE id = ?');
+            $update->execute([$newHash, $uid]);
             session_regenerate_id(true);
             $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
             $success = 'Ihr Passwort wurde geändert.';
@@ -68,6 +76,15 @@ try {
 } catch (PDOException $e) {
     error_log($e->getMessage());
     $error = 'Das Profil konnte momentan nicht geladen werden. Bitte versuchen Sie es später erneut.';
+}
+
+$username = (string)($user['username'] ?? ($_SESSION['username'] ?? ''));
+$email = (string)($user['email'] ?? '');
+$displayName = (string)($user['display_name'] ?? '');
+$hasGoogle = !empty($user['google_sub']);
+
+function e(string $s): string {
+    return htmlspecialchars($s, ENT_QUOTES, 'UTF-8');
 }
 ?>
 <!DOCTYPE html>
@@ -90,6 +107,8 @@ try {
             --danger-text: #ffb4ab;
             --success-bg: #15352f;
             --success-text: #a8e6cf;
+            --info-bg: #1a2a3a;
+            --info-text: #90caf9;
         }
         * { box-sizing: border-box; }
         body {
@@ -138,16 +157,16 @@ try {
         }
         h2 { margin: 0 0 6px; font-size: 1.1rem; }
         .section-description { margin: 0 0 22px; color: var(--muted); font-size: 0.92rem; }
-        .account-name {
+        .account-details { margin-bottom: 20px; border-bottom: 1px solid var(--border); }
+        .account-row {
             display: flex;
             justify-content: space-between;
             gap: 16px;
-            padding: 14px 0 20px;
-            border-bottom: 1px solid var(--border);
-            margin-bottom: 20px;
+            padding: 12px 0;
         }
-        .account-name span:first-child { color: var(--muted); }
-        .account-name strong { overflow-wrap: anywhere; }
+        .account-row + .account-row { border-top: 1px solid #2c2c2c; }
+        .account-row span:first-child { color: var(--muted); }
+        .account-row strong { overflow-wrap: anywhere; text-align: right; }
         label { display: block; margin-bottom: 7px; font-size: 0.9rem; font-weight: 600; }
         input {
             width: 100%;
@@ -167,6 +186,8 @@ try {
         .message { margin: 0 0 18px; padding: 12px 14px; border-radius: 6px; font-size: 0.92rem; }
         .error { background: var(--danger-bg); color: var(--danger-text); }
         .success { background: var(--success-bg); color: var(--success-text); }
+        .info { background: var(--info-bg); color: var(--info-text); }
+        .info a { color: var(--info-text); }
         @media (max-width: 520px) {
             header { align-items: flex-start; }
             .back-link { width: 100%; }
@@ -184,36 +205,54 @@ try {
 
     <section class="profile-section" aria-labelledby="profile-heading">
         <h2 id="profile-heading">Kontodaten</h2>
-        <p class="section-description">Verwalten Sie Ihr Konto und ändern Sie Ihr Passwort.</p>
+        <p class="section-description">
+            <?= $isGoogleOnly ? 'Ihre Kontoinformationen.' : 'Verwalten Sie Ihr Konto und ändern Sie Ihr Passwort.' ?>
+        </p>
 
         <?php if ($error !== ''): ?>
-            <p class="message error" role="alert"><?= htmlspecialchars($error, ENT_QUOTES, 'UTF-8') ?></p>
+            <p class="message error" role="alert"><?= e($error) ?></p>
         <?php endif; ?>
         <?php if ($success !== ''): ?>
-            <p class="message success" role="status"><?= htmlspecialchars($success, ENT_QUOTES, 'UTF-8') ?></p>
+            <p class="message success" role="status"><?= e($success) ?></p>
         <?php endif; ?>
 
-        <div class="account-name">
-            <span>Benutzername</span>
-            <strong><?= htmlspecialchars($username, ENT_QUOTES, 'UTF-8') ?></strong>
+        <div class="account-details">
+            <?php if ($displayName !== ''): ?>
+                <div class="account-row"><span>Name</span><strong><?= e($displayName) ?></strong></div>
+            <?php endif; ?>
+            <div class="account-row"><span>Benutzername</span><strong><?= e($username) ?></strong></div>
+            <?php if ($email !== '' && $email !== $username): ?>
+                <div class="account-row"><span>E-Mail</span><strong><?= e($email) ?></strong></div>
+            <?php endif; ?>
+            <div class="account-row">
+                <span>Anmeldung</span>
+                <strong><?= $isGoogleOnly ? 'Google' : ($hasGoogle ? 'Passwort und Google' : 'Passwort') ?></strong>
+            </div>
         </div>
 
-        <h2>Passwort ändern</h2>
-        <form method="post" action="profile.php" autocomplete="off">
-            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8') ?>">
+        <?php if ($isGoogleOnly): ?>
+            <p class="message info" role="note">
+                Sie melden sich mit Ihrem Google-Konto an. Ihr Passwort wird von Google verwaltet und kann hier nicht geändert werden.
+                <a href="https://myaccount.google.com/security" target="_blank" rel="noopener noreferrer">Google-Sicherheitseinstellungen öffnen</a>
+            </p>
+        <?php else: ?>
+            <h2>Passwort ändern</h2>
+            <form method="post" action="profile.php" autocomplete="off">
+                <input type="hidden" name="csrf_token" value="<?= e($_SESSION['csrf_token']) ?>">
 
-            <label for="current_password">Aktuelles Passwort</label>
-            <input type="password" id="current_password" name="current_password" required autocomplete="current-password">
+                <label for="current_password">Aktuelles Passwort</label>
+                <input type="password" id="current_password" name="current_password" required autocomplete="current-password">
 
-            <label for="new_password">Neues Passwort</label>
-            <input type="password" id="new_password" name="new_password" required minlength="12" maxlength="72" autocomplete="new-password">
-            <p class="password-note">Mindestens 12 Zeichen, höchstens 72 Bytes.</p>
+                <label for="new_password">Neues Passwort</label>
+                <input type="password" id="new_password" name="new_password" required minlength="12" maxlength="72" autocomplete="new-password">
+                <p class="password-note">Mindestens 12 Zeichen, höchstens 72 Bytes.</p>
 
-            <label for="confirm_password">Neues Passwort bestätigen</label>
-            <input type="password" id="confirm_password" name="confirm_password" required minlength="12" maxlength="72" autocomplete="new-password">
+                <label for="confirm_password">Neues Passwort bestätigen</label>
+                <input type="password" id="confirm_password" name="confirm_password" required minlength="12" maxlength="72" autocomplete="new-password">
 
-            <button class="submit-button" type="submit">Passwort speichern</button>
-        </form>
+                <button class="submit-button" type="submit">Passwort speichern</button>
+            </form>
+        <?php endif; ?>
     </section>
 </main>
 </body>

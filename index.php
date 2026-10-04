@@ -25,6 +25,10 @@ session_start();
 // db.php loads config.php and creates $pdo and $config
 require_once 'db.php';
 
+// --- CURRENT USER: every vocabulary query is scoped to this ID ---
+$uid = (int)($_SESSION['user_id'] ?? 0);
+$isLoggedIn = !empty($_SESSION['logged_in']) && $uid > 0;
+
 // --- CONFIGURATION: API keys come from config.php (never hardcode them here) ---
 define('GEMINI_API_KEY', $config['gemini_api_key'] ?? '');
 define('RAPIDAPI_KEY', $config['rapidapi_key'] ?? '');
@@ -34,6 +38,13 @@ if (isset($pdo) && method_exists($pdo, 'setAttribute')) {
 }
 
 // --- HELPERS ---
+// Prepared query shortcut (used for all user-scoped SELECTs)
+function userQuery(PDO $pdo, string $sql, array $params = []): PDOStatement {
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    return $stmt;
+}
+
 const WORD_COLS = "sharepoint_list, Thema, Wortarten, Wort, Artikel, Plural, Score, Status, Created, Modified, NachsteUbungDatum, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Übersetzung, synonym, Beispiel";
 
 function jsonInput(): array {
@@ -148,7 +159,7 @@ if (isset($_GET['api'])) {
     $action = $_GET['api'] ?? '';
 
     if ($action === 'export_csv') {
-        if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
+        if (!$isLoggedIn) {
             http_response_code(401);
             exit;
         }
@@ -163,18 +174,18 @@ if (isset($_GET['api'])) {
         $output = fopen('php://output', 'w');
         fprintf($output, chr(0xEF).chr(0xBB).chr(0xBF));
 
-        $stmt = $pdo->query("SELECT * FROM meine_wortschatz ORDER BY Wort ASC");
+        $stmt = userQuery($pdo, "SELECT * FROM meine_wortschatz WHERE user_id = ? ORDER BY Wort ASC", [$uid]);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         if (!empty($rows)) {
             // image_data (huge base64) is excluded from the export
-            $header = array_values(array_filter(array_keys($rows[0]), fn($k) => $k !== 'image_data'));
+            $header = array_values(array_filter(array_keys($rows[0]), fn($k) => !in_array($k, ['image_data', 'user_id'], true)));
             fputcsv($output, $header, ';', '"', '\\');
             foreach ($rows as $row) {
                 if (isset($row['VerbFlag'])) {
                     $row['VerbFlag'] = (int)$row['VerbFlag'] === 1 ? 1 : 0;
                 }
-                unset($row['image_data']);
+                unset($row['image_data'], $row['user_id']);
                 // Prevent CSV/Excel formula injection
                 foreach ($row as $k => $v) {
                     if (is_string($v) && $v !== '' && in_array($v[0], ['=', '+', '-', '@'], true)) {
@@ -191,7 +202,7 @@ if (isset($_GET['api'])) {
 
     if ($action === 'view_image') {
         // SECURITY FIX: images are only visible to logged-in users
-        if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
+        if (!$isLoggedIn) {
             http_response_code(401);
             exit;
         }
@@ -202,8 +213,8 @@ if (isset($_GET['api'])) {
             exit('Wort fehlt.');
         }
 
-        $stmt = $pdo->prepare("SELECT image_data, mime_type FROM meine_wortschatz WHERE Wort = ? LIMIT 1");
-        $stmt->execute([$word]);
+        $stmt = $pdo->prepare("SELECT image_data, mime_type FROM meine_wortschatz WHERE Wort = ? AND user_id = ? LIMIT 1");
+        $stmt->execute([$word, $uid]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($row && !empty($row['image_data'])) {
@@ -239,7 +250,7 @@ if (isset($_GET['api'])) {
     header('Content-Type: application/json');
     header('X-Content-Type-Options: nosniff');
 
-    if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
+    if (!$isLoggedIn) {
         echo json_encode(['error' => 'Unauthorized']);
         exit;
     }
@@ -319,8 +330,8 @@ if (isset($_GET['api'])) {
 
         $dataUri = 'data:' . $mimeType . ';base64,' . $imageBase64;
 
-        $update = $pdo->prepare("UPDATE meine_wortschatz SET image_data = ?, mime_type = ? WHERE Wort = ?");
-        $update->execute([$dataUri, $mimeType, $word]);
+        $update = $pdo->prepare("UPDATE meine_wortschatz SET image_data = ?, mime_type = ? WHERE Wort = ? AND user_id = ?");
+        $update->execute([$dataUri, $mimeType, $word, $uid]);
 
         echo json_encode(['success' => true, 'image_data' => $dataUri]);
         exit;
@@ -347,8 +358,8 @@ if (isset($_GET['api'])) {
         if (!in_array($sort, $allowed_sorts, true)) $sort = 'Wort';
         $order = ($order === 'DESC') ? 'DESC' : 'ASC';
 
-        $query = "SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE 1=1";
-        $params = [];
+        $query = "SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ?";
+        $params = [$uid];
 
         if (!empty($filterLetter)) {
             $query .= " AND Wort LIKE ?";
@@ -417,8 +428,8 @@ if (isset($_GET['api'])) {
         $filterWortart = $_GET['wortart'] ?? '';
         $filterScore = isset($_GET['score']) && $_GET['score'] !== '' ? $_GET['score'] : '';
 
-        $query = "SELECT Status, COUNT(*) as count FROM meine_wortschatz WHERE 1=1";
-        $params = [];
+        $query = "SELECT Status, COUNT(*) as count FROM meine_wortschatz WHERE user_id = ?";
+        $params = [$uid];
 
         if (!empty($filterList)) {
             $query .= " AND sharepoint_list = ?";
@@ -449,17 +460,17 @@ if (isset($_GET['api'])) {
 
     if ($action === 'get_metadata') {
         try {
-            $lists = $pdo->query("SELECT DISTINCT sharepoint_list FROM meine_wortschatz WHERE sharepoint_list IS NOT NULL AND sharepoint_list != '' ORDER BY sharepoint_list ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
-            $themen = $pdo->query("SELECT DISTINCT Thema FROM meine_wortschatz WHERE Thema IS NOT NULL AND Thema != '' ORDER BY Thema ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
-            $wortarten = $pdo->query("SELECT DISTINCT Wortarten FROM meine_wortschatz WHERE Wortarten IS NOT NULL AND Wortarten != '' ORDER BY Wortarten ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
-            $scores = $pdo->query("SELECT DISTINCT Score FROM meine_wortschatz WHERE Score IS NOT NULL ORDER BY Score ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
-            $grundverben = $pdo->query("SELECT DISTINCT grundverb FROM meine_wortschatz WHERE grundverb IS NOT NULL AND grundverb != '' ORDER BY grundverb ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
-            $praefixe = $pdo->query("SELECT DISTINCT praefix FROM meine_wortschatz WHERE praefix IS NOT NULL AND praefix != '' ORDER BY praefix ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+            $lists = userQuery($pdo, "SELECT DISTINCT sharepoint_list FROM meine_wortschatz WHERE user_id = ? AND sharepoint_list IS NOT NULL AND sharepoint_list != '' ORDER BY sharepoint_list ASC", [$uid])->fetchAll(PDO::FETCH_COLUMN) ?: [];
+            $themen = userQuery($pdo, "SELECT DISTINCT Thema FROM meine_wortschatz WHERE user_id = ? AND Thema IS NOT NULL AND Thema != '' ORDER BY Thema ASC", [$uid])->fetchAll(PDO::FETCH_COLUMN) ?: [];
+            $wortarten = userQuery($pdo, "SELECT DISTINCT Wortarten FROM meine_wortschatz WHERE user_id = ? AND Wortarten IS NOT NULL AND Wortarten != '' ORDER BY Wortarten ASC", [$uid])->fetchAll(PDO::FETCH_COLUMN) ?: [];
+            $scores = userQuery($pdo, "SELECT DISTINCT Score FROM meine_wortschatz WHERE user_id = ? AND Score IS NOT NULL ORDER BY Score ASC", [$uid])->fetchAll(PDO::FETCH_COLUMN) ?: [];
+            $grundverben = userQuery($pdo, "SELECT DISTINCT grundverb FROM meine_wortschatz WHERE user_id = ? AND grundverb IS NOT NULL AND grundverb != '' ORDER BY grundverb ASC", [$uid])->fetchAll(PDO::FETCH_COLUMN) ?: [];
+            $praefixe = userQuery($pdo, "SELECT DISTINCT praefix FROM meine_wortschatz WHERE user_id = ? AND praefix IS NOT NULL AND praefix != '' ORDER BY praefix ASC", [$uid])->fetchAll(PDO::FETCH_COLUMN) ?: [];
 
-            $statusesStmt = $pdo->query("SELECT DISTINCT Status FROM meine_wortschatz WHERE Status IS NOT NULL AND Status != '' ORDER BY FIELD(Status, 'aktiva', 'wiederholen', 'neu', 'passiv', 'warteschlange')");
+            $statusesStmt = userQuery($pdo, "SELECT DISTINCT Status FROM meine_wortschatz WHERE user_id = ? AND Status IS NOT NULL AND Status != '' ORDER BY FIELD(Status, 'aktiva', 'wiederholen', 'neu', 'passiv', 'warteschlange')", [$uid]);
             $statuses = $statusesStmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
 
-            $mappingStmt = $pdo->query("SELECT DISTINCT Thema, Wortarten FROM meine_wortschatz WHERE Thema IS NOT NULL AND Thema != '' AND Wortarten IS NOT NULL AND Wortarten != '' ORDER BY Thema ASC, Wortarten ASC");
+            $mappingStmt = userQuery($pdo, "SELECT DISTINCT Thema, Wortarten FROM meine_wortschatz WHERE user_id = ? AND Thema IS NOT NULL AND Thema != '' AND Wortarten IS NOT NULL AND Wortarten != '' ORDER BY Thema ASC, Wortarten ASC", [$uid]);
             $pairs = $mappingStmt->fetchAll(PDO::FETCH_ASSOC);
             $themaWortartenMap = [];
             foreach ($pairs as $p) {
@@ -517,14 +528,23 @@ if (isset($_GET['api'])) {
             exit;
         }
 
+        try {
         if (!empty($originalWort)) {
-            $stmt = $pdo->prepare("UPDATE meine_wortschatz SET sharepoint_list = ?, Thema = ?, Wort = ?, Artikel = ?, Plural = ?, Übersetzung = ?, synonym = ?, Wortarten = ?, Beispiel = ?, Score = ?, Status = ?, VerbFlag = ?, Konjugation = ?, grundverb = ?, praefix = ?, praeposition_kollokation = ?, Modified = NOW() WHERE Wort = ?");
-            $stmt->execute([$sharepointList, $thema, $wort, $artikel, $plural, $uebersetzung, $synonym, $wortarten, $beispiel, $score, $status, $verbFlag, $konjugation, $grundverb, $praefix, $praeposition_kollokation, $originalWort]);
+            $stmt = $pdo->prepare("UPDATE meine_wortschatz SET sharepoint_list = ?, Thema = ?, Wort = ?, Artikel = ?, Plural = ?, Übersetzung = ?, synonym = ?, Wortarten = ?, Beispiel = ?, Score = ?, Status = ?, VerbFlag = ?, Konjugation = ?, grundverb = ?, praefix = ?, praeposition_kollokation = ?, Modified = NOW() WHERE Wort = ? AND user_id = ?");
+            $stmt->execute([$sharepointList, $thema, $wort, $artikel, $plural, $uebersetzung, $synonym, $wortarten, $beispiel, $score, $status, $verbFlag, $konjugation, $grundverb, $praefix, $praeposition_kollokation, $originalWort, $uid]);
             echo json_encode(['success' => true, 'message' => "Wort '$wort' erfolgreich aktualisiert!"]);
         } else {
-            $stmt = $pdo->prepare("INSERT INTO meine_wortschatz (sharepoint_list, Thema, Wort, Artikel, Plural, Übersetzung, synonym, Wortarten, Beispiel, Score, Status, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Created, Modified, NachsteUbungDatum) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())");
-            $stmt->execute([$sharepointList, $thema, $wort, $artikel, $plural, $uebersetzung, $synonym, $wortarten, $beispiel, $score, $status, $verbFlag, $konjugation, $grundverb, $praefix, $praeposition_kollokation]);
+            $stmt = $pdo->prepare("INSERT INTO meine_wortschatz (user_id, sharepoint_list, Thema, Wort, Artikel, Plural, Übersetzung, synonym, Wortarten, Beispiel, Score, Status, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Created, Modified, NachsteUbungDatum) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())");
+            $stmt->execute([$uid, $sharepointList, $thema, $wort, $artikel, $plural, $uebersetzung, $synonym, $wortarten, $beispiel, $score, $status, $verbFlag, $konjugation, $grundverb, $praefix, $praeposition_kollokation]);
             echo json_encode(['success' => true, 'message' => "Wort '$wort' erfolgreich hinzugefügt!"]);
+        }
+        } catch (PDOException $e) {
+            if ($e->getCode() === '23000') {
+                echo json_encode(['success' => false, 'message' => "Das Wort '$wort' existiert bereits in deinem Wortschatz."]);
+            } else {
+                error_log($e->getMessage());
+                echo json_encode(['success' => false, 'message' => 'Speichern fehlgeschlagen.']);
+            }
         }
         exit;
     }
@@ -533,8 +553,8 @@ if (isset($_GET['api'])) {
         $input = jsonInput();
         $wortToDelete = $input['Wort'] ?? '';
         if (!empty($wortToDelete)) {
-            $stmt = $pdo->prepare("DELETE FROM meine_wortschatz WHERE Wort = ?");
-            $stmt->execute([$wortToDelete]);
+            $stmt = $pdo->prepare("DELETE FROM meine_wortschatz WHERE Wort = ? AND user_id = ?");
+            $stmt->execute([$wortToDelete, $uid]);
             echo json_encode(['success' => true, 'message' => "Wort '$wortToDelete' gelöscht."]);
         } else {
             echo json_encode(['success' => false, 'message' => 'Ungültiges Wort.']);
@@ -546,8 +566,8 @@ if (isset($_GET['api'])) {
         $input = jsonInput();
         $wortToPromote = trim($input['Wort'] ?? '');
         if (!empty($wortToPromote)) {
-            $stmt = $pdo->prepare("UPDATE meine_wortschatz SET Score = 10, Status = 'aktiva', Modified = NOW(), NachsteUbungDatum = DATE_ADD(NOW(), INTERVAL (10 * 10) DAY) WHERE Wort = ?");
-            $stmt->execute([$wortToPromote]);
+            $stmt = $pdo->prepare("UPDATE meine_wortschatz SET Score = 10, Status = 'aktiva', Modified = NOW(), NachsteUbungDatum = DATE_ADD(NOW(), INTERVAL (10 * 10) DAY) WHERE Wort = ? AND user_id = ?");
+            $stmt->execute([$wortToPromote, $uid]);
             echo json_encode(['success' => true, 'message' => "Wort '$wortToPromote' direkt zu 'aktiva' (Score 10) befördert!"]);
         } else {
             echo json_encode(['success' => false, 'message' => 'Ungültiges Wort.']);
@@ -598,15 +618,16 @@ if (isset($_GET['api'])) {
     if ($action === 'ai_story_game_next' || $action === 'ai_story_writer_next') {
         $input = jsonInput();
         [$where, $params] = buildGameFilter($input);
+        array_unshift($params, $uid);
 
-        $stmt = $pdo->prepare("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE 1=1" . $where . " ORDER BY RAND() LIMIT 5");
+        $stmt = $pdo->prepare("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ?" . $where . " ORDER BY RAND() LIMIT 5");
         $stmt->execute($params);
         $chosenWords = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         if (count($chosenWords) < 5) {
             $needed = 5 - count($chosenWords);
-            $fallbackStmt = $pdo->prepare("SELECT " . WORD_COLS . " FROM meine_wortschatz ORDER BY RAND() LIMIT ?");
-            $fallbackStmt->execute([$needed]);
+            $fallbackStmt = $pdo->prepare("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ? ORDER BY RAND() LIMIT ?");
+            $fallbackStmt->execute([$uid, $needed]);
             $chosenWords = array_merge($chosenWords, $fallbackStmt->fetchAll(PDO::FETCH_ASSOC));
         }
 
@@ -681,7 +702,7 @@ if (isset($_GET['api'])) {
     }
 
     if ($action === 'der_die_das_next') {
-        $stmt = $pdo->query("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE Status = 'aktiva' AND Artikel IN ('der', 'die', 'das') ORDER BY RAND() LIMIT 1");
+        $stmt = userQuery($pdo, "SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ? AND Status = 'aktiva' AND Artikel IN ('der', 'die', 'das') ORDER BY RAND() LIMIT 1", [$uid]);
         $word = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($word) {
@@ -694,7 +715,7 @@ if (isset($_GET['api'])) {
     }
 
     if ($action === 'deutsch_meister_next') {
-        $stmt = $pdo->query("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE Status = 'aktiva' ORDER BY RAND() LIMIT 1");
+        $stmt = userQuery($pdo, "SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ? AND Status = 'aktiva' ORDER BY RAND() LIMIT 1", [$uid]);
         $word = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($word) {
@@ -759,8 +780,8 @@ if (isset($_GET['api'])) {
             $points = 1;
         }
 
-        $stmt = $pdo->prepare("SELECT Score, Status FROM meine_wortschatz WHERE Wort = ?");
-        $stmt->execute([$word]);
+        $stmt = $pdo->prepare("SELECT Score, Status FROM meine_wortschatz WHERE Wort = ? AND user_id = ?");
+        $stmt->execute([$word, $uid]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($row) {
@@ -769,12 +790,12 @@ if (isset($_GET['api'])) {
             $newStatus = ($newScore >= 10) ? 'aktiva' : 'wiederholen';
             $newAddDatum = ($newStatus === 'aktiva') ? ($newScore * 10) : max(1, $newScore * 3);
 
-            $update = $pdo->prepare("UPDATE meine_wortschatz SET Score = ?, Status = ?, Modified = NOW(), NachsteUbungDatum = DATE_ADD(NOW(), INTERVAL ? DAY) WHERE Wort = ?");
-            $update->execute([$newScore, $newStatus, $newAddDatum, $word]);
+            $update = $pdo->prepare("UPDATE meine_wortschatz SET Score = ?, Status = ?, Modified = NOW(), NachsteUbungDatum = DATE_ADD(NOW(), INTERVAL ? DAY) WHERE Wort = ? AND user_id = ?");
+            $update->execute([$newScore, $newStatus, $newAddDatum, $word, $uid]);
         }
 
-        $detailStmt = $pdo->prepare("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE Wort = ? LIMIT 1");
-        $detailStmt->execute([$word]);
+        $detailStmt = $pdo->prepare("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE Wort = ? AND user_id = ? LIMIT 1");
+        $detailStmt->execute([$word, $uid]);
         $wordDetails = $detailStmt->fetch(PDO::FETCH_ASSOC);
 
         echo json_encode([
@@ -798,8 +819,8 @@ if (isset($_GET['api'])) {
             exit;
         }
 
-        $stmt = $pdo->prepare("SELECT Artikel, Score, Status FROM meine_wortschatz WHERE Wort = ?");
-        $stmt->execute([$wort]);
+        $stmt = $pdo->prepare("SELECT Artikel, Score, Status FROM meine_wortschatz WHERE Wort = ? AND user_id = ?");
+        $stmt->execute([$wort, $uid]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$row) {
@@ -829,8 +850,8 @@ if (isset($_GET['api'])) {
         $newStatus = ($newScore < 10) ? 'wiederholen' : ($row['Status'] ?: 'aktiva');
         $newAddDatum = ($newStatus === 'aktiva') ? ($newScore * 10) : max(1, $newScore * 3);
 
-        $update = $pdo->prepare("UPDATE meine_wortschatz SET Score = ?, Status = ?, Modified = NOW(), NachsteUbungDatum = DATE_ADD(NOW(), INTERVAL ? DAY) WHERE Wort = ?");
-        $update->execute([$newScore, $newStatus, $newAddDatum, $wort]);
+        $update = $pdo->prepare("UPDATE meine_wortschatz SET Score = ?, Status = ?, Modified = NOW(), NachsteUbungDatum = DATE_ADD(NOW(), INTERVAL ? DAY) WHERE Wort = ? AND user_id = ?");
+        $update->execute([$newScore, $newStatus, $newAddDatum, $wort, $uid]);
 
         echo json_encode([
             'success' => true,
@@ -888,8 +909,8 @@ if (isset($_GET['api'])) {
 
         $pointsToAdd = 0;
 
-        $stmt = $pdo->prepare("SELECT Score, Status FROM meine_wortschatz WHERE Wort = ?");
-        $stmt->execute([$word]);
+        $stmt = $pdo->prepare("SELECT Score, Status FROM meine_wortschatz WHERE Wort = ? AND user_id = ?");
+        $stmt->execute([$word, $uid]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($row) {
@@ -910,8 +931,8 @@ if (isset($_GET['api'])) {
             $newStatus = ($newScore >= 10) ? 'aktiva' : 'wiederholen';
             $newAddDatum = ($newStatus === 'aktiva') ? ($newScore * 10) : max(1, $newScore * 3);
 
-            $update = $pdo->prepare("UPDATE meine_wortschatz SET Score = ?, Status = ?, Modified = NOW(), NachsteUbungDatum = DATE_ADD(NOW(), INTERVAL ? DAY) WHERE Wort = ?");
-            $update->execute([$newScore, $newStatus, $newAddDatum, $word]);
+            $update = $pdo->prepare("UPDATE meine_wortschatz SET Score = ?, Status = ?, Modified = NOW(), NachsteUbungDatum = DATE_ADD(NOW(), INTERVAL ? DAY) WHERE Wort = ? AND user_id = ?");
+            $update->execute([$newScore, $newStatus, $newAddDatum, $word, $uid]);
         }
 
         echo json_encode([
@@ -939,12 +960,12 @@ if (isset($_GET['api'])) {
                 $statusParams = $selectedStatuses;
             }
 
-            $stmt = $pdo->prepare("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE 1=1" . $statusClause . " ORDER BY NachsteUbungDatum $sortOrder, Created $sortOrder LIMIT 500");
-            $stmt->execute($statusParams);
+            $stmt = $pdo->prepare("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ?" . $statusClause . " ORDER BY NachsteUbungDatum $sortOrder, Created $sortOrder LIMIT 500");
+            $stmt->execute(array_merge([$uid], $statusParams));
             $candidates = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             if (empty($candidates)) {
-                $fallback = $pdo->query("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE Übersetzung IS NOT NULL AND Übersetzung != '' ORDER BY RAND() LIMIT 1");
+                $fallback = userQuery($pdo, "SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ? AND Übersetzung IS NOT NULL AND Übersetzung != '' ORDER BY RAND() LIMIT 1", [$uid]);
                 $targetWord = $fallback->fetch(PDO::FETCH_ASSOC);
             } else {
                 $targetWord = $candidates[array_rand($candidates)];
@@ -952,8 +973,8 @@ if (isset($_GET['api'])) {
 
             if ($targetWord) {
                 normalizeVerbFlag($targetWord);
-                $wrongStmt = $pdo->prepare("SELECT DISTINCT Übersetzung FROM meine_wortschatz WHERE Übersetzung IS NOT NULL AND Übersetzung != '' AND Übersetzung != ? ORDER BY RAND() LIMIT 3");
-                $wrongStmt->execute([$targetWord['Übersetzung']]);
+                $wrongStmt = $pdo->prepare("SELECT DISTINCT Übersetzung FROM meine_wortschatz WHERE user_id = ? AND Übersetzung IS NOT NULL AND Übersetzung != '' AND Übersetzung != ? ORDER BY RAND() LIMIT 3");
+                $wrongStmt->execute([$uid, $targetWord['Übersetzung']]);
                 $wrongTrans = $wrongStmt->fetchAll(PDO::FETCH_COLUMN);
 
                 $options = array_merge([$targetWord['Übersetzung']], $wrongTrans);
@@ -974,14 +995,14 @@ if (isset($_GET['api'])) {
         $specificWord = trim($input['specific_word'] ?? '');
 
         if (!empty($specificWord)) {
-            $stmt = $pdo->prepare("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE Wort = ? LIMIT 1");
-            $stmt->execute([$specificWord]);
+            $stmt = $pdo->prepare("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE Wort = ? AND user_id = ? LIMIT 1");
+            $stmt->execute([$specificWord, $uid]);
             $word = $stmt->fetch(PDO::FETCH_ASSOC);
             $notice = "Spezifisches Wort wird geübt: '$specificWord'";
 
             if (!$word) {
                 $notice = "Spezifisches Wort nicht gefunden. Stattdessen wird ein zufälliges Wort angezeigt.";
-                $fallback = $pdo->query("SELECT * FROM (SELECT " . WORD_COLS . " FROM meine_wortschatz ORDER BY NachsteUbungDatum ASC, Created ASC LIMIT 1000) AS subset ORDER BY RAND() LIMIT 1");
+                $fallback = userQuery($pdo, "SELECT * FROM (SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ? ORDER BY NachsteUbungDatum ASC, Created ASC LIMIT 1000) AS subset ORDER BY RAND() LIMIT 1", [$uid]);
                 $word = $fallback->fetch(PDO::FETCH_ASSOC);
             }
 
@@ -994,12 +1015,13 @@ if (isset($_GET['api'])) {
         }
 
         [$filterWhere, $params] = buildGameFilter($input, true);
-        $query = "SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE 1=1" . $filterWhere;
+        array_unshift($params, $uid);
+        $query = "SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ?" . $filterWhere;
 
         $hasFilters = !empty($input['statuses']) || !empty($input['sharepoint_lists']) || !empty($input['themen']) || !empty($input['categories']);
 
         if ($hasFilters) {
-            $countStmt = $pdo->prepare("SELECT COUNT(*) FROM meine_wortschatz WHERE 1=1" . $filterWhere);
+            $countStmt = $pdo->prepare("SELECT COUNT(*) FROM meine_wortschatz WHERE user_id = ?" . $filterWhere);
             $countStmt->execute($params);
             $totalMatches = (int)$countStmt->fetchColumn();
 
@@ -1016,7 +1038,7 @@ if (isset($_GET['api'])) {
         $notice = '';
 
         if (!$word) {
-            $fallback = $pdo->query("SELECT * FROM (SELECT " . WORD_COLS . " FROM meine_wortschatz ORDER BY NachsteUbungDatum ASC, Created ASC LIMIT 1000) AS subset ORDER BY RAND() LIMIT 1");
+            $fallback = userQuery($pdo, "SELECT * FROM (SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ? ORDER BY NachsteUbungDatum ASC, Created ASC LIMIT 1000) AS subset ORDER BY RAND() LIMIT 1", [$uid]);
             $word = $fallback->fetch(PDO::FETCH_ASSOC);
             $notice = "Keine Wörter gefunden, die den genauen Filtern entsprechen. Stattdessen wird ein zufälliges Wort aus der Warteschlange angezeigt.";
         }
@@ -1035,8 +1057,8 @@ if (isset($_GET['api'])) {
         $result = $input['result'] ?? '';
 
         if (!empty($wort)) {
-            $stmt = $pdo->prepare("SELECT Score, Status FROM meine_wortschatz WHERE Wort = ?");
-            $stmt->execute([$wort]);
+            $stmt = $pdo->prepare("SELECT Score, Status FROM meine_wortschatz WHERE Wort = ? AND user_id = ?");
+            $stmt->execute([$wort, $uid]);
             $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if ($row) {
@@ -1063,8 +1085,8 @@ if (isset($_GET['api'])) {
                     $newStatus = 'wiederholen';
                 }
 
-                $update = $pdo->prepare("UPDATE meine_wortschatz SET Score = ?, Status = ?, Modified = NOW(), NachsteUbungDatum = DATE_ADD(NOW(), INTERVAL ? DAY) WHERE Wort = ?");
-                $update->execute([$newScore, $newStatus, $newAddDatum, $wort]);
+                $update = $pdo->prepare("UPDATE meine_wortschatz SET Score = ?, Status = ?, Modified = NOW(), NachsteUbungDatum = DATE_ADD(NOW(), INTERVAL ? DAY) WHERE Wort = ? AND user_id = ?");
+                $update->execute([$newScore, $newStatus, $newAddDatum, $wort, $uid]);
             }
         }
         echo json_encode(['success' => true]);
@@ -1118,36 +1140,36 @@ if (isset($_GET['api'])) {
 }
 
 // Ensure login check for page render
-if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
+if (!$isLoggedIn) {
     header('Location: login.php');
     exit;
 }
 
 try {
-    $todayCountStmt = $pdo->query("SELECT COUNT(*) FROM meine_wortschatz WHERE DATE(Modified) = CURDATE()");
+    $todayCountStmt = userQuery($pdo, "SELECT COUNT(*) FROM meine_wortschatz WHERE user_id = ? AND DATE(Modified) = CURDATE()", [$uid]);
     $todayReviewedCount = (int)$todayCountStmt->fetchColumn();
 } catch (Exception $e) {
     $todayReviewedCount = 0;
 }
 
 try {
-    $initialWords = $pdo->query("SELECT " . WORD_COLS . " FROM meine_wortschatz ORDER BY Wort ASC LIMIT 50")->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    $initialWords = userQuery($pdo, "SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ? ORDER BY Wort ASC LIMIT 50", [$uid])->fetchAll(PDO::FETCH_ASSOC) ?: [];
     foreach ($initialWords as &$w) {
         normalizeVerbFlag($w);
     }
     unset($w);
 
-    $initialLists = $pdo->query("SELECT DISTINCT sharepoint_list FROM meine_wortschatz WHERE sharepoint_list IS NOT NULL AND sharepoint_list != '' ORDER BY sharepoint_list ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
-    $initialThemen = $pdo->query("SELECT DISTINCT Thema FROM meine_wortschatz WHERE Thema IS NOT NULL AND Thema != '' ORDER BY Thema ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
-    $initialWortarten = $pdo->query("SELECT DISTINCT Wortarten FROM meine_wortschatz WHERE Wortarten IS NOT NULL AND Wortarten != '' ORDER BY Wortarten ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
-    $initialScores = $pdo->query("SELECT DISTINCT Score FROM meine_wortschatz WHERE Score IS NOT NULL ORDER BY Score ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
-    $initialGrundverben = $pdo->query("SELECT DISTINCT grundverb FROM meine_wortschatz WHERE grundverb IS NOT NULL AND grundverb != '' ORDER BY grundverb ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
-    $initialPraefixe = $pdo->query("SELECT DISTINCT praefix FROM meine_wortschatz WHERE praefix IS NOT NULL AND praefix != '' ORDER BY praefix ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+    $initialLists = userQuery($pdo, "SELECT DISTINCT sharepoint_list FROM meine_wortschatz WHERE user_id = ? AND sharepoint_list IS NOT NULL AND sharepoint_list != '' ORDER BY sharepoint_list ASC", [$uid])->fetchAll(PDO::FETCH_COLUMN) ?: [];
+    $initialThemen = userQuery($pdo, "SELECT DISTINCT Thema FROM meine_wortschatz WHERE user_id = ? AND Thema IS NOT NULL AND Thema != '' ORDER BY Thema ASC", [$uid])->fetchAll(PDO::FETCH_COLUMN) ?: [];
+    $initialWortarten = userQuery($pdo, "SELECT DISTINCT Wortarten FROM meine_wortschatz WHERE user_id = ? AND Wortarten IS NOT NULL AND Wortarten != '' ORDER BY Wortarten ASC", [$uid])->fetchAll(PDO::FETCH_COLUMN) ?: [];
+    $initialScores = userQuery($pdo, "SELECT DISTINCT Score FROM meine_wortschatz WHERE user_id = ? AND Score IS NOT NULL ORDER BY Score ASC", [$uid])->fetchAll(PDO::FETCH_COLUMN) ?: [];
+    $initialGrundverben = userQuery($pdo, "SELECT DISTINCT grundverb FROM meine_wortschatz WHERE user_id = ? AND grundverb IS NOT NULL AND grundverb != '' ORDER BY grundverb ASC", [$uid])->fetchAll(PDO::FETCH_COLUMN) ?: [];
+    $initialPraefixe = userQuery($pdo, "SELECT DISTINCT praefix FROM meine_wortschatz WHERE user_id = ? AND praefix IS NOT NULL AND praefix != '' ORDER BY praefix ASC", [$uid])->fetchAll(PDO::FETCH_COLUMN) ?: [];
 
-    $initialStatusesStmt = $pdo->query("SELECT DISTINCT Status FROM meine_wortschatz WHERE Status IS NOT NULL AND Status != '' ORDER BY FIELD(Status, 'aktiva', 'wiederholen', 'neu', 'passiv', 'warteschlange')");
+    $initialStatusesStmt = userQuery($pdo, "SELECT DISTINCT Status FROM meine_wortschatz WHERE user_id = ? AND Status IS NOT NULL AND Status != '' ORDER BY FIELD(Status, 'aktiva', 'wiederholen', 'neu', 'passiv', 'warteschlange')", [$uid]);
     $initialStatuses = $initialStatusesStmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
 
-    $initialMappingStmt = $pdo->query("SELECT DISTINCT Thema, Wortarten FROM meine_wortschatz WHERE Thema IS NOT NULL AND Thema != '' AND Wortarten IS NOT NULL AND Wortarten != '' ORDER BY Thema ASC, Wortarten ASC");
+    $initialMappingStmt = userQuery($pdo, "SELECT DISTINCT Thema, Wortarten FROM meine_wortschatz WHERE user_id = ? AND Thema IS NOT NULL AND Thema != '' AND Wortarten IS NOT NULL AND Wortarten != '' ORDER BY Thema ASC, Wortarten ASC", [$uid]);
     $initialPairs = $initialMappingStmt->fetchAll(PDO::FETCH_ASSOC);
     $initialThemaWortartenMap = [];
     foreach ($initialPairs as $p) {
