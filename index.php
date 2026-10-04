@@ -538,6 +538,8 @@ if (isset($_GET['api'])) {
                 }
             }
 
+            $aktivaCount = (int)userQuery($pdo, "SELECT COUNT(*) FROM meine_wortschatz WHERE user_id = ? AND Status = 'aktiva'", [$uid])->fetchColumn();
+
             echo json_encode([
                 'success' => true,
                 'lists' => $lists,
@@ -547,7 +549,8 @@ if (isset($_GET['api'])) {
                 'statuses' => $statuses,
                 'grundverben' => $grundverben,
                 'praefixe' => $praefixe,
-                'themaWortartenMap' => $themaWortartenMap
+                'themaWortartenMap' => $themaWortartenMap,
+                'aktiva_count' => $aktivaCount
             ]);
         } catch (Exception $e) {
             error_log($e->getMessage());
@@ -1290,8 +1293,8 @@ try {
             --md-subtle-hover: rgba(255,255,255,0.03);
             --md-th-bg: #242424;
             --md-track: #333333;
-            --md-avatar-bg: #17466b;
-            --md-avatar-text: #bbdefb;
+            --md-avatar-bg: #3a3a3a;
+            --md-avatar-text: #d6d6d6;
             --md-logout-text: #ff8a80;
             --md-logout-hover: #3b2424;
             --md-der: #64b5f6;
@@ -1361,8 +1364,8 @@ try {
         .header-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-left: auto; }
         .account-menu { position: relative; }
         .account-trigger {
-            display: inline-flex; align-items: center; gap: 9px; min-height: 42px;
-            padding: 6px 12px 6px 7px; border: 1px solid var(--md-control-border); border-radius: 8px;
+            display: inline-flex; align-items: center; justify-content: center; gap: 0;
+            width: 36px; height: 36px; padding: 0; border: 1px solid var(--md-control-border); border-radius: 50%;
             background: var(--md-control-bg); color: var(--md-on-surface); cursor: pointer; list-style: none;
             font: inherit; font-size: 0.9rem; font-weight: 600;
         }
@@ -1373,6 +1376,12 @@ try {
             display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
             background: var(--md-avatar-bg); color: var(--md-avatar-text); font-size: 0.85rem;
         }
+        /* label stays readable for screen readers, chevron hidden: icon-only Konto button */
+        .account-trigger .account-label {
+            position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+            overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+        }
+        .account-trigger .account-chevron { display: none; }
         .account-chevron {
             width: 7px; height: 7px; margin: -4px 0 0 3px;
             border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
@@ -1415,10 +1424,6 @@ try {
             header { padding: 10px 12px; flex-wrap: nowrap; }
             header h1 { font-size: 1.15rem; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
             .header-actions { flex-shrink: 0; }
-            .account-trigger { padding: 5px 10px 5px 5px; gap: 7px; }
-        }
-        @media (max-width: 360px) {
-            .account-trigger .account-label { display: none; }
         }
         h1 { font-size: 1.5rem; font-weight: 500; margin: 0; color: var(--md-accent-text); display: flex; align-items: center; gap: 8px; }
         h2 { font-size: 1.15rem; font-weight: 500; margin: 0 0 1rem 0; color: var(--md-on-surface); }
@@ -1896,6 +1901,36 @@ try {
             .chart-wrapper { height: 260px; }
             .quiz-grid { grid-template-columns: 1fr; }
         }
+        /* Level path in header (Sprachniveau nach aktiven Wörtern) */
+        .level-path { flex: 1 1 420px; max-width: 640px; min-width: 0; min-height: 60px; margin: 0 auto; }
+        .level-path svg { display: block; width: 100%; height: auto; overflow: visible; }
+        .lp-track { fill: none; stroke: #555; stroke-width: 2; stroke-dasharray: 2 5; stroke-linecap: round; }
+        .lp-fill { fill: none; stroke: #90caf9; stroke-width: 2.5; stroke-linecap: round; }
+        .lp-dot { fill: var(--md-surface); stroke: #777; stroke-width: 2; }
+        .lp-ring { fill: none; stroke: #90caf9; stroke-width: 3; stroke-linecap: round; }
+        .lp-code { font: 700 12px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #9e9e9e; text-anchor: middle; dominant-baseline: central; }
+        .lp-name { font-size: 12px; fill: #8a8a8a; text-anchor: middle; }
+        .lp-count { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #777; text-anchor: middle; }
+        .lp-node.done .lp-dot { fill: #17466b; stroke: #64b5f6; }
+        .lp-node.current .lp-dot { fill: #1a3a7a; stroke: #90caf9; stroke-width: 3; filter: drop-shadow(0 0 6px rgba(144,202,249,.6)); }
+        .lp-node.done .lp-code, .lp-node.current .lp-code { fill: #e3f2fd; }
+        .lp-node.done .lp-name { fill: #e0e0e0; }
+        .lp-node.current .lp-name { fill: #90caf9; font-weight: 700; }
+        .lp-node.done .lp-count, .lp-node.current .lp-count { fill: #a0a0a0; }
+        .lp-node.next .lp-name { fill: #bdbdbd; }
+        .lp-caption { text-align: center; font-size: 0.8rem; color: var(--md-text-muted); margin-top: 2px; }
+        .lp-caption strong { color: #90caf9; }
+        @media (max-width: 760px) {
+            #dashboard-view header { flex-wrap: nowrap; padding: 10px 12px; }
+            #dashboard-view header > h1 { display: none; }
+            .level-path { flex: 1 1 0; max-width: none; min-height: 0; }
+            .lp-caption { display: none; }
+        }
+        @media (max-width: 480px) {
+            .lp-count { display: none; }
+            .lp-name { font-size: 16px; }
+            .lp-code { font-size: 15px; }
+        }
     </style>
 </head>
 <body>
@@ -1918,10 +1953,11 @@ try {
     <div id="dashboard-view" class="view active">
         <header>
             <h1>📚 Mein Wortschatz</h1>
+            <div class="level-path" id="levelPath" role="img" aria-label="Sprachniveau"></div>
             <div class="header-actions">
                 <details class="account-menu" id="accountMenu">
-                    <summary class="account-trigger">
-                        <span class="account-avatar" aria-hidden="true">👤</span>
+                    <summary class="account-trigger" title="Konto">
+                        <span class="account-avatar" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7z"/></svg></span>
                         <span class="account-label">Konto</span>
                         <span class="account-chevron" aria-hidden="true"></span>
                     </summary>
@@ -2951,6 +2987,76 @@ async function fillWordWithAI() {
     }
 }
 
+// ===== Sprachniveau nach aktiven Wörtern =====
+const LEVELS = [
+    { code: 'A1', name: 'Novize',            min: 500 },
+    { code: 'A2', name: 'Praktiker',         min: 1300 },
+    { code: 'B1', name: 'Fortgeschrittener', min: 2500 },
+    { code: 'B2', name: 'Experte',           min: 4000 },
+    { code: 'C1', name: 'Spezialist',        min: 8000 },
+    { code: 'C2', name: 'Virtuose',          min: 15000 }
+];
+
+function renderLevelPath(aktivaCount) {
+    const box = document.getElementById('levelPath');
+    if (!box) return;
+
+    const n = Math.max(0, parseInt(aktivaCount, 10) || 0);
+    const fmt = v => v.toLocaleString('de-DE');
+    const X0 = 50, DX = 108, Y_LOW = 88, Y_HIGH = 56, R = 17, H = DX / 2;
+    const C = 2 * Math.PI * R;
+
+    let reached = -1; // highest level reached (-1 = none yet)
+    LEVELS.forEach((l, i) => { if (n >= l.min) reached = i; });
+    const next = reached + 1 < LEVELS.length ? reached + 1 : -1;
+    const prevMin = reached >= 0 ? LEVELS[reached].min : 0;
+    const frac = next >= 0 ? Math.min(1, (n - prevMin) / (LEVELS[next].min - prevMin)) : 1;
+
+    // wavy line through all nodes (low, high, low, high...)
+    const pts = LEVELS.map((_, i) => ({ x: X0 + i * DX, y: i % 2 === 0 ? Y_LOW : Y_HIGH }));
+    let d = `M ${pts[0].x} ${pts[0].y}`;
+    for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1], b = pts[i];
+        d += ` C ${a.x + H} ${a.y}, ${b.x - H} ${b.y}, ${b.x} ${b.y}`;
+    }
+    const segs = pts.length - 1;
+    const lineFill = reached < 0 ? 0 : ((reached + (next >= 0 ? frac : 0)) / segs) * 100;
+
+    const nodes = LEVELS.map((l, i) => {
+        const { x, y } = pts[i];
+        const state = i < reached ? 'done' : i === reached ? 'current' : i === next ? 'next' : 'locked';
+        const up = i % 2 === 1;
+        const nameY = up ? y - R - 9 : y + R + 15;
+        const countY = up ? y - R - 24 : y + R + 30;
+        const ring = state === 'next'
+            ? `<circle class="lp-ring" cx="${x}" cy="${y}" r="${R}" stroke-dasharray="${(frac * C).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 ${x} ${y})"/>`
+            : '';
+        const tip = n >= l.min
+            ? `${l.code} ${l.name}: erreicht`
+            : `${l.code} ${l.name}: noch ${fmt(l.min - n)} aktive Wörter`;
+        return `<g class="lp-node ${state}">
+            <title>${tip}</title>
+            <circle class="lp-dot" cx="${x}" cy="${y}" r="${R}"/>${ring}
+            <text class="lp-code" x="${x}" y="${y}">${l.code}</text>
+            <text class="lp-name" x="${x}" y="${nameY}">${l.name}</text>
+            <text class="lp-count" x="${x}" y="${countY}">${fmt(l.min)}+</text>
+        </g>`;
+    }).join('');
+
+    const caption = next >= 0
+        ? `<strong>${fmt(n)}</strong> aktive Wörter · noch ${fmt(LEVELS[next].min - n)} bis ${LEVELS[next].code} ${LEVELS[next].name}`
+        : `<strong>${fmt(n)}</strong> aktive Wörter · höchstes Niveau erreicht 🏆`;
+
+    box.setAttribute('aria-label', `Sprachniveau: ${reached >= 0 ? LEVELS[reached].code : 'unter A1'}, ${n} aktive Wörter`);
+    box.innerHTML = `
+        <svg viewBox="0 0 640 140" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path class="lp-track" d="${d}"/>
+            <path class="lp-fill" d="${d}" pathLength="100" stroke-dasharray="${lineFill.toFixed(2)} 100"/>
+            ${nodes}
+        </svg>
+        <div class="lp-caption">${caption}</div>`;
+}
+
 async function refreshMetadata() {
     try {
         const res = await fetch('index.php?api=get_metadata&_ts=' + Date.now(), { cache: 'no-store' });
@@ -2960,6 +3066,8 @@ async function refreshMetadata() {
             return;
         }
         if (!data.success) return;
+
+        renderLevelPath(data.aktiva_count);
 
         cachedLists = data.lists;
         cachedThemen = data.themen;

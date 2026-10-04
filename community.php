@@ -144,10 +144,6 @@ if (empty($_SESSION['logged_in']) || $uid <= 0) {
         .btn-small { min-height: 34px; padding: 6px 11px; font-size: 0.88rem; }
         :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
         .header-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-        .theme-switch { display: inline-flex; align-items: center; gap: 8px; font-size: 0.9rem; font-weight: 600; color: var(--muted); }
-        .theme-label-light { display: none; }
-        :root[data-theme="light"] .theme-label-dark { display: none; }
-        :root[data-theme="light"] .theme-label-light { display: inline; }
 
         .message { margin: 0 0 16px; padding: 12px 14px; border-radius: 6px; font-size: 0.92rem; }
         .message.error { background: var(--danger-bg); color: var(--danger-text); }
@@ -383,13 +379,6 @@ if (empty($_SESSION['logged_in']) || $uid <= 0) {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
             </a>
             <h1>👥 Community</h1>
-        </div>
-        <div class="header-actions">
-            <div class="theme-switch">
-                <span class="theme-label-dark">Dunkel Mode</span>
-                <span class="theme-label-light">Helles Mode</span>
-                <?php theme_toggle(); ?>
-            </div>
         </div>
     </header>
 
