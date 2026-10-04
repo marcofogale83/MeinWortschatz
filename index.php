@@ -1227,6 +1227,41 @@ try {
             border: 1px solid var(--md-border);
         }
         .header-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+        .account-menu { position: relative; }
+        .account-trigger {
+            display: inline-flex; align-items: center; gap: 9px; min-height: 42px;
+            padding: 6px 12px 6px 7px; border: 1px solid #454545; border-radius: 8px;
+            background: #303030; color: var(--md-on-surface); cursor: pointer; list-style: none;
+            font: inherit; font-size: 0.9rem; font-weight: 600;
+        }
+        .account-trigger::-webkit-details-marker { display: none; }
+        .account-trigger:hover, .account-menu[open] .account-trigger { background: #3a3a3a; border-color: #666; }
+        .account-trigger:focus-visible, .account-menu-item:focus-visible { outline: 2px solid #90caf9; outline-offset: 2px; }
+        .account-avatar {
+            display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
+            background: #17466b; color: #bbdefb; font-size: 0.85rem;
+        }
+        .account-chevron {
+            width: 7px; height: 7px; margin: -4px 0 0 3px;
+            border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+            transform: rotate(45deg); transition: transform 0.18s ease;
+        }
+        .account-menu[open] .account-chevron { margin-top: 4px; transform: rotate(225deg); }
+        .account-popover {
+            position: absolute; z-index: 30; top: calc(100% + 8px); right: 0; width: 240px;
+            padding: 8px; border: 1px solid #454545; border-radius: 8px;
+            background: #252525; box-shadow: var(--md-elevation-2);
+        }
+        .account-menu-identity { padding: 9px 10px 12px; border-bottom: 1px solid var(--md-border); }
+        .account-menu-caption { display: block; margin-bottom: 4px; color: var(--md-text-muted); font-size: 0.75rem; }
+        .account-menu-identity strong { display: block; overflow: hidden; color: var(--md-on-surface); font-size: 0.9rem; text-overflow: ellipsis; }
+        .account-menu-item {
+            display: flex; align-items: center; min-height: 42px; margin-top: 5px; padding: 0 10px;
+            border-radius: 6px; color: var(--md-on-surface); text-decoration: none; font-size: 0.9rem;
+        }
+        .account-menu-item:hover { background: #383838; }
+        .account-menu-logout { color: #ff8a80; }
+        .account-menu-logout:hover { background: #3b2424; }
         h1 { font-size: 1.5rem; font-weight: 500; margin: 0; color: #90caf9; display: flex; align-items: center; gap: 8px; }
         h2 { font-size: 1.15rem; font-weight: 500; margin: 0 0 1rem 0; color: var(--md-on-surface); }
 
@@ -1672,8 +1707,21 @@ try {
                 <button onclick="openGameSelection()" class="btn btn-success">🎮 Spiel starten</button>
                 <button onclick="switchView('statistics')" class="btn btn-info">📊 Statistiken</button>
                 <a href="index.php?api=export_csv" class="btn btn-secondary">📥 CSV exportieren</a>
-                <a href="profile.php" class="btn btn-secondary">👤 Profil</a>
-                <a href="logout.php" class="btn btn-danger" style="padding: 8px 14px; font-size: 0.85rem;">🚪 Abmelden</a>
+                <details class="account-menu" id="accountMenu">
+                    <summary class="account-trigger">
+                        <span class="account-avatar" aria-hidden="true">👤</span>
+                        <span>Konto</span>
+                        <span class="account-chevron" aria-hidden="true"></span>
+                    </summary>
+                    <div class="account-popover">
+                        <div class="account-menu-identity">
+                            <span class="account-menu-caption">Angemeldet als</span>
+                            <strong><?= htmlspecialchars((string)($_SESSION['username'] ?? 'Benutzer'), ENT_QUOTES, 'UTF-8') ?></strong>
+                        </div>
+                        <a class="account-menu-item" href="profile.php">👤 Mein Profil</a>
+                        <a class="account-menu-item account-menu-logout" href="logout.php">↪ Abmelden</a>
+                    </div>
+                </details>
             </div>
         </header>
 
@@ -2412,6 +2460,19 @@ const dailyTarget = 100;
 
 document.addEventListener('DOMContentLoaded', () => {
     updateDailyTrackerUI();
+
+    const accountMenu = document.getElementById('accountMenu');
+    if (accountMenu) {
+        document.addEventListener('click', event => {
+            if (!accountMenu.contains(event.target)) accountMenu.open = false;
+        });
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && accountMenu.open) {
+                accountMenu.open = false;
+                accountMenu.querySelector('summary').focus();
+            }
+        });
+    }
 
     const scrollContainer = document.getElementById('tableResponsiveContainer');
     if (scrollContainer) {
