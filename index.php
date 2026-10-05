@@ -81,6 +81,27 @@ function applyScorePoints(int $current, int $points): int {
     return $current > 0 ? max(0, $current + $points) : $current;
 }
 
+// Kenntnisse rating → new score (same rule for the main page, the games and the word form)
+function scoreAfterRating(int $current, string $result): int {
+    switch ($result) {
+        case 'direkt_aktiv':
+            return 10;
+        case 'sehr_gut':
+            return applyScorePoints($current, 3);
+        case 'yes':
+            return applyScorePoints($current, 1);
+        case 'wiederholen':
+            // Already in "wiederholen": lose a point but stay in it; otherwise restart at score 1
+            return statusFromScore($current) === 'wiederholen' ? max(1, $current - 1) : 1;
+        case 'passiv':
+            return -1;
+        case 'warteschlange':
+            return min($current, -2);
+        default:
+            return $current;
+    }
+}
+
 // Days until the next review, based on the score
 function nextReviewDays(int $score): int {
     return statusFromScore($score) === 'aktiva' ? $score * 10 : max(1, $score * 3);
@@ -580,8 +601,11 @@ if (isset($_GET['api'])) {
         $synonym = trim($input['synonym'] ?? '');
         $wortarten = trim($input['Wortarten'] ?? '');
         $beispiel = trim($input['Beispiel'] ?? '');
-        $score = !empty($input['Score']) ? (int)$input['Score'] : 0;
-        $status = statusFromScore($score); // never taken from the form
+        // The score is never typed in: the form only sends an optional Kenntnisse rating
+        $kenntnisse = trim($input['Kenntnisse'] ?? '');
+        if (!in_array($kenntnisse, ['direkt_aktiv', 'sehr_gut', 'yes', 'wiederholen', 'passiv', 'warteschlange'], true)) {
+            $kenntnisse = '';
+        }
 
         $konjugation = trim($input['Konjugation'] ?? '');
         $grundverb = $verbFlag === 1 ? trim($input['grundverb'] ?? '') : null;
@@ -595,13 +619,24 @@ if (isset($_GET['api'])) {
         }
 
         try {
+        // Current score: 0 for a new word, the stored one when editing
+        $score = 0;
+        if (!empty($originalWort)) {
+            $cur = $pdo->prepare("SELECT Score FROM meine_wortschatz WHERE Wort = ? AND user_id = ?");
+            $cur->execute([$originalWort, $uid]);
+            $score = (int)$cur->fetchColumn();
+        }
+        $status = statusFromScore($score);
+
         if (!empty($originalWort)) {
             $stmt = $pdo->prepare("UPDATE meine_wortschatz SET sharepoint_list = ?, Thema = ?, Wort = ?, Artikel = ?, Plural = ?, Übersetzung = ?, synonym = ?, Wortarten = ?, Beispiel = ?, Score = ?, Status = ?, VerbFlag = ?, Konjugation = ?, grundverb = ?, praefix = ?, praeposition_kollokation = ?, Modified = NOW() WHERE Wort = ? AND user_id = ?");
             $stmt->execute([$sharepointList, $thema, $wort, $artikel, $plural, $uebersetzung, $synonym, $wortarten, $beispiel, $score, $status, $verbFlag, $konjugation, $grundverb, $praefix, $praeposition_kollokation, $originalWort, $uid]);
+            if ($kenntnisse !== '') saveWordScore($pdo, $uid, $wort, scoreAfterRating($score, $kenntnisse));
             echo json_encode(['success' => true, 'message' => "Wort '$wort' erfolgreich aktualisiert!"]);
         } else {
             $stmt = $pdo->prepare("INSERT INTO meine_wortschatz (user_id, sharepoint_list, Thema, Wort, Artikel, Plural, Übersetzung, synonym, Wortarten, Beispiel, Score, Status, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Created, Modified, NachsteUbungDatum) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())");
             $stmt->execute([$uid, $sharepointList, $thema, $wort, $artikel, $plural, $uebersetzung, $synonym, $wortarten, $beispiel, $score, $status, $verbFlag, $konjugation, $grundverb, $praefix, $praeposition_kollokation]);
+            if ($kenntnisse !== '') saveWordScore($pdo, $uid, $wort, scoreAfterRating($score, $kenntnisse));
             echo json_encode(['success' => true, 'message' => "Wort '$wort' erfolgreich hinzugefügt!"]);
         }
         } catch (PDOException $e) {
@@ -1114,28 +1149,7 @@ if (isset($_GET['api'])) {
             $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if ($row) {
-                $currentScore = (int)$row['Score'];
-
-                switch ($result) {
-                    case 'sehr_gut':
-                        $newScore = applyScorePoints($currentScore, 3);
-                        break;
-                    case 'yes':
-                        $newScore = applyScorePoints($currentScore, 1);
-                        break;
-                    case 'wiederholen':
-                        // Already in "wiederholen": lose a point but stay in it; otherwise restart at score 1
-                        $newScore = statusFromScore($currentScore) === 'wiederholen' ? max(1, $currentScore - 1) : 1;
-                        break;
-                    case 'passiv':
-                        $newScore = -1;
-                        break;
-                    case 'warteschlange':
-                        $newScore = min($currentScore, -2);
-                        break;
-                    default:
-                        $newScore = $currentScore;
-                }
+                $newScore = scoreAfterRating((int)$row['Score'], $result === 'direkt_aktiv' ? '' : $result);
 
                 saveWordScore($pdo, $uid, $wort, $newScore);
             }
@@ -1603,6 +1617,10 @@ try {
         .rate-btn.r-passiv { --c: var(--md-passiv-grey); }
         .rate-btn.r-warteschlange { --c: #424242; }
         .rate-group.is-saving { opacity: 0.5; pointer-events: none; }
+        /* word form: the bar works as a choice; once one is picked, the others fade */
+        .rate-group.is-picker { margin-bottom: 4px; }
+        .rate-group.is-picker.has-choice .rate-btn:not(.is-selected) { opacity: 0.35; }
+        .rate-group.is-picker .rate-btn.is-selected { box-shadow: inset 0 0 0 3px #ffffff; }
         .status-cell { font-weight: 500; }
         .aktion-cell { min-width: 0; }
         /* Bearbeiten / Üben / Löschen: same segmented shape as the Kenntnisse bar */
@@ -2262,12 +2280,17 @@ try {
                     </div>
 
                     <div class="form-group-section">
-                        <label for="Score">Punktzahl (Score)</label>
-                        <input type="number" id="Score" name="Score" value="0" step="1" oninput="updateStatusFromScore()">
+                        <label>Kenntnisse <span class="field-auto-hint">optional – ohne Auswahl bleibt der Status, wie er ist</span></label>
+                        <input type="hidden" id="Kenntnisse" value="">
+                        <div class="rate-group is-picker" id="formKenntnisse" role="radiogroup" aria-label="Kenntnisse wählen">
+                            <button type="button" class="rate-btn r-direkt-aktiv" data-rate="direkt_aktiv" onclick="pickFormKenntnisse('direkt_aktiv')" title="Direkt aktiv (Score 10)" role="radio" aria-checked="false"><span class="rate-icon" aria-hidden="true">🚀</span><span>direkt aktiv</span></button>
+                            <?php foreach (RATE_OPTIONS as [$rKey, $rClass, $rIcon, $rLabel]): ?>
+                                <button type="button" class="rate-btn <?= $rClass ?>" data-rate="<?= $rKey ?>" onclick="pickFormKenntnisse('<?= $rKey ?>')" title="<?= $rLabel ?>" role="radio" aria-checked="false"><span class="rate-icon" aria-hidden="true"><?= $rIcon ?></span><span><?= $rLabel ?></span></button>
+                            <?php endforeach; ?>
+                        </div>
 
-                        <label for="Status">Status <span class="field-auto-hint">wird automatisch aus dem Score berechnet</span></label>
+                        <label for="Status" style="margin-top: 12px;">Status <span class="field-auto-hint">wird automatisch berechnet</span></label>
                         <input type="text" id="Status" value="neu" readonly tabindex="-1" class="readonly-field" aria-readonly="true">
-                        <p class="score-status-legend">&lt; -1 warteschlange · -1 passiv · 0 neu · 1–9 wiederholen · ≥ 10 aktiva</p>
                     </div>
 
                     <div style="display: flex; gap: 12px; margin-top: 1rem;">
@@ -5456,9 +5479,41 @@ function statusFromScore(score) {
     return 'aktiva';
 }
 
-function updateStatusFromScore() {
-    const raw = parseInt(document.getElementById('Score').value, 10);
-    document.getElementById('Status').value = statusFromScore(Number.isNaN(raw) ? 0 : raw);
+// Mirror of scoreAfterRating() in PHP, only for the status preview in the word form
+function scoreAfterRating(current, result) {
+    switch (result) {
+        case 'direkt_aktiv': return 10;
+        case 'sehr_gut': return Math.max(current, 0) + 3;
+        case 'yes': return Math.max(current, 0) + 1;
+        case 'wiederholen': return statusFromScore(current) === 'wiederholen' ? Math.max(1, current - 1) : 1;
+        case 'passiv': return -1;
+        case 'warteschlange': return Math.min(current, -2);
+        default: return current;
+    }
+}
+
+// Score of the word currently in the form (0 for a new word)
+let formCurrentScore = 0;
+
+function setFormKenntnisse(key) {
+    document.getElementById('Kenntnisse').value = key;
+    const group = document.getElementById('formKenntnisse');
+    group.classList.toggle('has-choice', key !== '');
+    group.querySelectorAll('.rate-btn').forEach(btn => {
+        const on = btn.dataset.rate === key;
+        btn.classList.toggle('is-selected', on);
+        btn.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+    // "direkt aktiv" only makes sense for words that are not aktiva yet (same as the main page)
+    group.querySelector('.r-direkt-aktiv').style.display = statusFromScore(formCurrentScore) === 'aktiva' ? 'none' : '';
+    const current = statusFromScore(formCurrentScore);
+    const next = key ? statusFromScore(scoreAfterRating(formCurrentScore, key)) : current;
+    document.getElementById('Status').value = next === current ? current : `${current} → ${next}`;
+}
+
+// Clicking the chosen option again removes the choice
+function pickFormKenntnisse(key) {
+    setFormKenntnisse(document.getElementById('Kenntnisse').value === key ? '' : key);
 }
 
 // Enter in the Wort field starts the AI fill for a new word instead of saving it half-empty
@@ -5491,8 +5546,8 @@ function toggleVerbFields() {
 function resetForm() {
     document.getElementById('wordForm').reset();
     document.getElementById('original_wort').value = '';
-    document.getElementById('Score').value = '0';
-    updateStatusFromScore();
+    formCurrentScore = 0;
+    setFormKenntnisse('');
     toggleVerbFields();
     hideEditImage();
     document.getElementById('formTitle').textContent = 'Neues Wort hinzufügen';
@@ -5522,8 +5577,8 @@ function editWord(row) {
     toggleVerbFields();
 
     document.getElementById('Beispiel').value = row.Beispiel || '';
-    document.getElementById('Score').value = row.Score || 0;
-    updateStatusFromScore();
+    formCurrentScore = parseInt(row.Score, 10) || 0;
+    setFormKenntnisse('');
 
     loadEditImage(row.Wort);
 
@@ -5552,7 +5607,7 @@ async function submitWordForm(e) {
         praefix: document.getElementById('praefix').value,
         praeposition_kollokation: document.getElementById('praeposition_kollokation').value,
         Beispiel: document.getElementById('Beispiel').value,
-        Score: document.getElementById('Score').value
+        Kenntnisse: document.getElementById('Kenntnisse').value
     };
 
     const res = await fetch('index.php?api=save&_ts=' + Date.now(), {

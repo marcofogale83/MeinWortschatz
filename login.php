@@ -129,13 +129,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         .btn:hover { background-color: var(--primary-dark); }
         .btn-google {
-            margin-top: 10px;
             background: var(--input-bg);
             color: var(--text-main);
             border: 1px solid var(--input-border);
         }
         .btn-google:hover { background: #303030; }
-        .divider { text-align: center; color: var(--text-muted); font-size: 0.8rem; margin: 14px 0 4px; }
+        .divider { display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 0.8rem; margin: 16px 0 8px; }
+        .divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid var(--input-border); }
         .error { background: var(--danger-bg); color: var(--danger-text); padding: 10px; border-radius: 6px; margin-bottom: 1rem; font-size: 0.85rem; text-align: center; border: 1px solid var(--danger-border); }
     </style>
 </head>
@@ -147,9 +147,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div class="error"><?= htmlspecialchars($error) ?></div>
     <?php endif; ?>
 
+    <a href="google_login.php" class="btn btn-google">Mit Google anmelden</a>
+
+    <div class="divider">oder</div>
+
     <form action="login.php" method="POST">
         <label for="username">Benutzername</label>
-        <input type="text" id="username" name="username" required autocomplete="username" autofocus
+        <input type="text" id="username" name="username" required autocomplete="username"
                value="<?= htmlspecialchars($_POST['username'] ?? '') ?>">
 
         <label for="password">Passwort</label>
@@ -158,8 +162,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <button type="submit" class="btn">Anmelden</button>
     </form>
 
-    <div class="divider">oder</div>
-    <a href="google_login.php" class="btn btn-google">Mit Google anmelden</a>
 </div>
 
 </body>
