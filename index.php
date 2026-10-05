@@ -113,6 +113,15 @@ function jsonForScript($value): string {
 }
 
 // Safe JS string argument for inline onclick="" attributes
+// Kenntnisse rating buttons: [result key, css class, icon, label]
+const RATE_OPTIONS = [
+    ['sehr_gut',      'r-sehr-gut',      '⭐', 'sehr gut'],
+    ['yes',           'r-ja',            '👍', 'ja'],
+    ['wiederholen',   'r-wiederholen',   '🔁', 'wiederholen'],
+    ['passiv',        'r-passiv',        '💤', 'passiv'],
+    ['warteschlange', 'r-warteschlange', '⏳', 'warteschlange'],
+];
+
 function jsArg($value): string {
     return htmlspecialchars(
         json_encode((string)$value, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE),
@@ -1388,12 +1397,6 @@ try {
             transform: rotate(45deg); transition: transform 0.18s ease;
         }
         .account-menu[open] .account-chevron { margin-top: 4px; transform: rotate(225deg); }
-        .account-popover {
-            position: absolute; z-index: 30; top: calc(100% + 8px); right: 0; width: min(240px, calc(100vw - 32px));
-            max-height: calc(100vh - 120px); overflow-y: auto;
-            padding: 8px; border: 1px solid var(--md-control-border); border-radius: 8px;
-            background: var(--md-popover-bg); box-shadow: var(--md-elevation-2);
-        }
         .account-menu-identity { padding: 9px 10px 12px; border-bottom: 1px solid var(--md-border); }
         .account-menu-caption { display: block; margin-bottom: 4px; color: var(--md-text-muted); font-size: 0.75rem; }
         .account-menu-identity strong { display: block; overflow: hidden; color: var(--md-on-surface); font-size: 0.9rem; text-overflow: ellipsis; }
@@ -1549,17 +1552,43 @@ try {
         th:nth-child(3), td:nth-child(3) { width: 7%; }
         th:nth-child(4), td:nth-child(4) { width: 12%; }
         th:nth-child(5), td:nth-child(5) { width: 9%; }
-        th:nth-child(6), td:nth-child(6) { width: 5%; }
-        th:nth-child(7), td:nth-child(7) { width: 27%; }
-        th:nth-child(8), td:nth-child(8) { width: 9%; }
-        th:nth-child(9), td:nth-child(9) { width: 15%; }
+        th:nth-child(6), td:nth-child(6) { width: 32%; }
+        th:nth-child(7), td:nth-child(7) { width: 9%; }
+        th:nth-child(8), td:nth-child(8) { width: 15%; }
 
         .wort-cell { font-size: 1.15rem; font-weight: 600; }
         .wort-der { color: var(--md-der); }
         .wort-die { color: var(--md-die); }
         .wort-das { color: var(--md-das); }
         .wort-other { color: var(--md-article-other); }
-        .kenntnisse-cell { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+        .kenntnisse-cell { min-width: 0; }
+
+        /* Kenntnisse: one connected rating bar instead of 5 loose buttons */
+        /* always one row of 5 equal segments; 1px gaps = separator lines */
+        .rate-group {
+            display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px;
+            width: 100%; border: 1px solid var(--md-border); border-radius: 10px; overflow: hidden;
+            background: var(--md-border);
+        }
+        .rate-btn {
+            --c: var(--md-primary);
+            display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+            min-width: 0; padding: 6px 4px 5px; border: 0;
+            background: var(--md-surface-card); color: var(--md-text-muted); cursor: pointer;
+            font: inherit; font-size: clamp(0.6rem, 0.55vw, 0.7rem); font-weight: 600; line-height: 1.1; white-space: nowrap;
+            transition: background-color 0.15s, color 0.15s, transform 0.1s;
+        }
+        .rate-btn .rate-icon { font-size: 1.05rem; line-height: 1; }
+        .rate-btn span:last-child { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+        .rate-btn:hover { background: color-mix(in srgb, var(--c) 20%, var(--md-surface-card)); color: var(--c); }
+        .rate-btn:active { transform: scale(0.94); }
+        .rate-btn:focus-visible { outline: 2px solid var(--c); outline-offset: -2px; }
+        .rate-btn.r-sehr-gut { --c: var(--md-aktiva-green); }
+        .rate-btn.r-ja { --c: var(--md-success); }
+        .rate-btn.r-wiederholen { --c: var(--md-primary); }
+        .rate-btn.r-passiv { --c: var(--md-passiv-grey); }
+        .rate-btn.r-warteschlange { --c: #90a4ae; }
+        .rate-group.is-saving { opacity: 0.5; pointer-events: none; }
         .status-cell { font-weight: 500; }
         .aktion-cell { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
 
@@ -1858,12 +1887,21 @@ try {
         .stats-text-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--md-border); }
         .stats-text-item:last-child { border-bottom: none; }
 
-        /* Filter dropdown */
-        .filter-toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
-        .filter-toolbar > input { flex: 1; min-width: 180px; margin-bottom: 0; padding: 10px; }
-        .filter-menu { position: relative; }
+        /* ===== Filter + Konto panels — MOBILE FIRST =====
+           Base (phones): bottom sheets with a dimmed backdrop.
+           >= 768px: the same markup becomes an anchored dropdown. */
+        .filter-toolbar {
+            display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; margin-bottom: 1rem;
+        }
+        .filter-toolbar > #filterSearch { grid-column: 1; grid-row: 1; }
+        .filter-toolbar > .filter-menu { grid-column: 2; grid-row: 1; }
+        .filter-toolbar > #filterTranslationSearch { grid-column: 1 / -1; grid-row: 2; }
+        .filter-toolbar > input {
+            width: 100%; min-width: 0; min-height: 44px; margin-bottom: 0; padding: 10px 12px;
+            font-size: 16px; /* 16px stops iOS from zooming into the field */
+        }
         .filter-trigger {
-            display: inline-flex; align-items: center; gap: 8px; min-height: 42px; padding: 6px 14px;
+            display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 6px 14px;
             border: 1px solid var(--md-control-border); border-radius: 8px; background: var(--md-control-bg); color: var(--md-on-surface);
             cursor: pointer; list-style: none; font: inherit; font-size: 0.9rem; font-weight: 600; user-select: none;
         }
@@ -1876,19 +1914,114 @@ try {
             border-radius: 10px; background: var(--md-primary); color: #fff; font-size: 0.75rem;
         }
         .filter-badge[hidden] { display: none; }
-        .filter-popover {
-            position: absolute; z-index: 30; top: calc(100% + 8px); left: 0;
-            width: min(640px, calc(100vw - 32px)); max-height: 70vh; overflow-y: auto;
-            padding: 14px; border: 1px solid var(--md-control-border); border-radius: 8px;
-            background: var(--md-popover-bg); box-shadow: var(--md-elevation-2);
+
+        /* Sheet shell (shared by Filter and Konto) */
+        .sheet-menu[open] > summary::before {
+            /* backdrop: lives inside <summary>, so tapping it closes the <details> natively */
+            content: ''; position: fixed; inset: 0; z-index: 900;
+            background: rgba(0, 0, 0, 0.55); cursor: default;
         }
+        .sheet-panel {
+            position: fixed; z-index: 910; left: 0; right: 0; bottom: 0;
+            display: flex; flex-direction: column;
+            max-height: 85vh; max-height: 85dvh;
+            background: var(--md-popover-bg); color: var(--md-on-surface);
+            border: 1px solid var(--md-control-border); border-bottom: 0;
+            border-radius: 16px 16px 0 0; box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.35);
+            padding-bottom: env(safe-area-inset-bottom, 0px);
+            overscroll-behavior: contain; touch-action: pan-y;
+        }
+        .sheet-handle {
+            flex-shrink: 0; width: 40px; height: 4px; margin: 8px auto 2px;
+            border-radius: 2px; background: var(--md-control-border-hover);
+        }
+        .sheet-header {
+            flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+            padding: 4px 8px 4px 16px;
+        }
+        .sheet-title { margin: 0; font-size: 1.05rem; font-weight: 600; color: var(--md-on-surface); }
+        .sheet-close {
+            display: grid; place-items: center; width: 44px; height: 44px; padding: 0;
+            border: 0; border-radius: 50%; background: transparent; color: var(--md-text-muted);
+            font-size: 1.5rem; line-height: 1; cursor: pointer;
+        }
+        .sheet-close:hover { background: var(--md-control-hover); color: var(--md-on-surface); }
+        .sheet-close:focus-visible { outline: 2px solid var(--md-accent-text); outline-offset: 2px; }
+        .sheet-body {
+            flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
+            overscroll-behavior: contain; padding: 4px 16px 12px;
+        }
+        .sheet-footer {
+            flex-shrink: 0; display: flex; gap: 10px; padding: 12px 16px;
+            border-top: 1px solid var(--md-border); background: var(--md-popover-bg);
+        }
+        .sheet-footer .btn { flex: 1; min-height: 48px; }
+        .sheet-panel.is-dragging { transition: none; }
+        /* page behind an open sheet must not scroll */
+        html:has(.sheet-menu[open]) { overflow: hidden; }
+        @media (prefers-reduced-motion: no-preference) {
+            .sheet-menu[open] > .sheet-panel { animation: sheet-up 0.24s cubic-bezier(0.2, 0.8, 0.2, 1); }
+            .sheet-menu[open] > summary::before { animation: sheet-fade 0.24s ease-out; }
+        }
+        @keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
+        @keyframes sheet-fade { from { opacity: 0; } to { opacity: 1; } }
+
+        /* Filter sheet content */
         .filter-group { padding: 4px 0 14px; border-bottom: 1px solid var(--md-border); margin-bottom: 12px; }
-        .filter-group-title { margin: 0 0 10px; font-size: 0.85rem; font-weight: 600; color: var(--md-text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
-        .filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+        .sheet-body .filter-group:last-child { border-bottom: 0; margin-bottom: 0; padding-bottom: 4px; }
+        .filter-group-title { margin: 0 0 10px; font-size: 0.85rem; font-weight: 600; color: var(--md-text-muted); }
+        .filter-grid { display: grid; grid-template-columns: 1fr; gap: 10px; }
         .filter-field { display: flex; flex-direction: column; gap: 4px; margin: 0; font-size: 0.8rem; color: var(--md-text-muted); }
-        .filter-field select { width: 100%; margin-bottom: 0; padding: 9px; }
-        .filter-popover .alphabet-bar { margin: 0; padding: 0; border: 0; background: none; box-shadow: none; }
-        .filter-popover-footer { display: flex; justify-content: flex-end; gap: 10px; }
+        .filter-field select { width: 100%; min-height: 44px; margin-bottom: 0; padding: 10px; font-size: 16px; }
+        .filter-panel .alphabet-bar {
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 6px;
+            margin: 0; padding: 0; border: 0; background: none; box-shadow: none;
+        }
+        .filter-panel .alphabet-btn { min-height: 44px; padding: 0; font-size: 0.95rem; }
+        .filter-panel .alphabet-btn:first-child { grid-column: span 2; }
+
+        /* Konto sheet content */
+        .account-panel .sheet-body { padding: 0 12px 12px; }
+        .account-panel .account-menu-item { min-height: 48px; font-size: 0.95rem; }
+        .account-panel .account-menu-theme { min-height: 48px; }
+
+        @media (min-width: 480px) {
+            .filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+
+        /* Tablet / desktop: anchored dropdowns */
+        @media (min-width: 768px) {
+            .filter-toolbar { display: flex; flex-wrap: wrap; align-items: center; }
+            .filter-toolbar > input { flex: 1; min-width: 180px; min-height: 42px; font-size: 0.95rem; }
+            .filter-trigger { min-height: 42px; }
+
+            .sheet-menu { position: relative; }
+            .sheet-menu[open] > summary::before { content: none; }
+            html:has(.sheet-menu[open]) { overflow: visible; }
+            .sheet-panel {
+                position: absolute; z-index: 30; top: calc(100% + 8px); bottom: auto; left: auto; right: auto;
+                max-height: 70vh; border: 1px solid var(--md-control-border); border-radius: 8px;
+                box-shadow: var(--md-elevation-2); padding-bottom: 0;
+            }
+            .sheet-menu[open] > .sheet-panel { animation: none; }
+            .sheet-handle { display: none; }
+
+            .filter-panel { left: 0; width: min(640px, calc(100vw - 32px)); }
+            .filter-panel .sheet-body { padding: 4px 14px 10px; }
+            .filter-grid { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+            .filter-field select { min-height: 0; padding: 9px; font-size: 0.95rem; }
+            .filter-panel .alphabet-bar { display: flex; flex-wrap: wrap; }
+            .filter-panel .alphabet-btn { min-height: 0; padding: 6px 10px; font-size: 0.85rem; }
+            .filter-panel .alphabet-btn:first-child { grid-column: auto; }
+            .sheet-footer { justify-content: flex-end; padding: 10px 14px; }
+            .sheet-footer .btn { flex: 0 0 auto; min-height: 0; }
+
+            .account-panel { right: 0; width: 260px; max-height: calc(100vh - 120px); }
+            .account-panel .sheet-header { display: none; }
+            .account-panel .sheet-body { padding: 8px; }
+            .account-panel .account-menu-item { min-height: 42px; font-size: 0.9rem; }
+            .account-panel .account-menu-theme { min-height: 0; }
+        }
 
         @media (max-width: 900px) {
             table, thead, tbody, th, td, tr { display: block; width: 100% !important; }
@@ -1898,6 +2031,9 @@ try {
             table td::before { content: attr(data-label); font-weight: 600; color: var(--md-text-muted); font-size: 0.8rem; margin-right: 10px; }
             table td.wort-cell { justify-content: space-between; }
             table td.kenntnisse-cell, table td.aktion-cell { justify-content: flex-end; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--md-border); }
+            table td.kenntnisse-cell { flex-direction: column; align-items: stretch; gap: 8px; }
+            .rate-btn { padding: 9px 2px 7px; font-size: 0.64rem; }
+            .rate-btn .rate-icon { font-size: 1.25rem; }
             .chart-wrapper { height: 260px; }
             .quiz-grid { grid-template-columns: 1fr; }
         }
@@ -1955,13 +2091,19 @@ try {
             <h1>📚 Mein Wortschatz</h1>
             <div class="level-path" id="levelPath" role="img" aria-label="Sprachniveau"></div>
             <div class="header-actions">
-                <details class="account-menu" id="accountMenu">
+                <details class="account-menu sheet-menu" id="accountMenu">
                     <summary class="account-trigger" title="Konto">
                         <span class="account-avatar" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7z"/></svg></span>
                         <span class="account-label">Konto</span>
                         <span class="account-chevron" aria-hidden="true"></span>
                     </summary>
-                    <div class="account-popover">
+                    <div class="account-popover sheet-panel account-panel" role="dialog" aria-label="Konto">
+                        <div class="sheet-handle" aria-hidden="true"></div>
+                        <div class="sheet-header">
+                            <h2 class="sheet-title">Konto</h2>
+                            <button type="button" class="sheet-close" onclick="closeSheet('accountMenu')" aria-label="Schließen">&times;</button>
+                        </div>
+                        <div class="sheet-body">
                         <div class="account-menu-theme">
                             <span class="theme-label-dark">Dunkel Mode</span>
                             <span class="theme-label-light">Helles Mode</span>
@@ -1976,6 +2118,7 @@ try {
                         <button type="button" class="account-menu-item" onclick="document.getElementById('accountMenu').open = false; switchView('statistics');">📊 Statistiken</button>
                         <a class="account-menu-item" href="index.php?api=export_csv">📥 CSV exportieren</a>
                         <a class="account-menu-item account-menu-logout" href="logout.php">↪ Abmelden</a>
+                        </div>
                     </div>
                 </details>
             </div>
@@ -2094,14 +2237,20 @@ try {
 
             <form id="filterForm" onsubmit="event.preventDefault(); loadDashboardData(true);">
                 <div class="filter-toolbar">
-                    <details class="filter-menu" id="filterMenu">
+                    <details class="filter-menu sheet-menu" id="filterMenu">
                         <summary class="filter-trigger">
                             <span aria-hidden="true">⚙️</span>
                             <span>Filter</span>
                             <span class="filter-badge" id="filterBadge" hidden>0</span>
                             <span class="account-chevron" aria-hidden="true"></span>
                         </summary>
-                        <div class="filter-popover">
+                        <div class="filter-popover sheet-panel filter-panel" role="dialog" aria-label="Filter">
+                            <div class="sheet-handle" aria-hidden="true"></div>
+                            <div class="sheet-header">
+                                <h3 class="sheet-title">Filter</h3>
+                                <button type="button" class="sheet-close" onclick="closeFilterMenu()" aria-label="Schließen">&times;</button>
+                            </div>
+                            <div class="sheet-body">
                             <section class="filter-group">
                                 <h3 class="filter-group-title">🔤 Anfangsbuchstabe</h3>
                                 <div class="alphabet-bar" id="alphabetBar">
@@ -2227,7 +2376,8 @@ try {
                                 </div>
                             </section>
 
-                            <div class="filter-popover-footer">
+                            </div>
+                            <div class="filter-popover-footer sheet-footer">
                                 <button type="button" class="btn btn-secondary" onclick="resetFilters()">Zurücksetzen</button>
                                 <button type="button" class="btn" onclick="closeFilterMenu()">Fertig</button>
                             </div>
@@ -2248,7 +2398,6 @@ try {
                             <th onclick="setSort('Plural')">Plural ↕</th>
                             <th>Übersetzung</th>
                             <th>Werkzeuge</th>
-                            <th onclick="setSort('Score')">Score ↕</th>
                             <th>Kenntnisse</th>
                             <th onclick="setSort('Status')">Status ↕</th>
                             <th>Aktion</th>
@@ -2256,7 +2405,7 @@ try {
                     </thead>
                     <tbody id="wordTableBody">
                         <?php if (empty($initialWords)): ?>
-                            <tr><td colspan="9" style="text-align: center; color: var(--md-text-muted); padding: 2rem;">Keine Vokabeln gefunden.</td></tr>
+                            <tr><td colspan="8" style="text-align: center; color: var(--md-text-muted); padding: 2rem;">Keine Vokabeln gefunden.</td></tr>
                         <?php else: ?>
                             <?php foreach ($initialWords as $row):
                                 $artClass = '';
@@ -2288,13 +2437,12 @@ try {
                                             <?php endif; ?>
                                         </div>
                                     </td>
-                                    <td data-label="Score"><?= htmlspecialchars($row['Score'] ?? 0) ?></td>
                                     <td class="kenntnisse-cell" data-label="Kenntnisse">
-                                        <button onclick="inlineRateWord(<?= $wortArg ?>, 'sehr_gut')" class="btn btn-aktiva" style="padding: 8px 12px; font-size: 0.85rem;" title="sehr gut">sehr gut</button>
-                                        <button onclick="inlineRateWord(<?= $wortArg ?>, 'yes')" class="btn btn-success" style="padding: 8px 12px; font-size: 0.85rem;" title="ja">ja</button>
-                                        <button onclick="inlineRateWord(<?= $wortArg ?>, 'wiederholen')" class="btn" style="padding: 8px 12px; font-size: 0.85rem; background-color: var(--md-primary);" title="wiederholen">wiederholen</button>
-                                        <button onclick="inlineRateWord(<?= $wortArg ?>, 'passiv')" class="btn btn-passiv" style="padding: 8px 12px; font-size: 0.85rem;" title="passiv">passiv</button>
-                                        <button onclick="inlineRateWord(<?= $wortArg ?>, 'warteschlange')" class="btn" style="padding: 8px 12px; font-size: 0.85rem; background-color: #424242;" title="warteschlange">warteschlange</button>
+                                        <div class="rate-group" role="group" aria-label="Kenntnisse bewerten">
+                                            <?php foreach (RATE_OPTIONS as [$rKey, $rClass, $rIcon, $rLabel]): ?>
+                                                <button type="button" class="rate-btn <?= $rClass ?>" onclick="inlineRateWord(<?= $wortArg ?>, '<?= $rKey ?>', this)" title="<?= $rLabel ?>"><span class="rate-icon" aria-hidden="true"><?= $rIcon ?></span><span><?= $rLabel ?></span></button>
+                                            <?php endforeach; ?>
+                                        </div>
                                     </td>
                                     <td data-label="Status" class="status-cell"><?= htmlspecialchars($row['Status'] ?? '') ?></td>
                                     <td class="aktion-cell" data-label="Aktion">
@@ -2802,6 +2950,8 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+
+    document.querySelectorAll('.sheet-menu').forEach(enableSheetSwipe);
 
     const scrollContainer = document.getElementById('tableResponsiveContainer');
     if (scrollContainer) {
@@ -4894,7 +5044,9 @@ async function submitGameAnswer(result) {
     fetchNextGameWord();
 }
 
-async function inlineRateWord(wort, result) {
+async function inlineRateWord(wort, result, btn) {
+    const group = btn ? btn.closest('.rate-group') : null;
+    if (group) group.classList.add('is-saving');
     try {
         const res = await fetch('index.php?api=game_answer&_ts=' + Date.now(), {
             method: 'POST',
@@ -4915,6 +5067,7 @@ async function inlineRateWord(wort, result) {
         loadDashboardData(true);
     } catch (err) {
         console.error('Fehler beim Aktualisieren des Wortstatus', err);
+        if (group) group.classList.remove('is-saving');
     }
 }
 
@@ -4971,6 +5124,51 @@ function handleTranslationSearchInput() {
     transSearchTimeout = setTimeout(() => {
         loadDashboardData(true);
     }, 300);
+}
+
+// Close a sheet/dropdown and return focus to its trigger
+function closeSheet(id) {
+    const menu = document.getElementById(id);
+    if (!menu) return;
+    menu.open = false;
+    const summary = menu.querySelector('summary');
+    if (summary) summary.focus();
+}
+
+// Phones: drag a sheet down (from its handle/header, or when its content is scrolled to the top) to close it
+function enableSheetSwipe(menu) {
+    const panel = menu.querySelector('.sheet-panel');
+    const body = menu.querySelector('.sheet-body');
+    if (!panel) return;
+    const phone = window.matchMedia('(max-width: 767.98px)');
+    let startY = null, dy = 0;
+
+    panel.addEventListener('touchstart', e => {
+        if (!phone.matches || e.touches.length !== 1) return;
+        const onGrip = e.target.closest('.sheet-handle, .sheet-header');
+        if (!onGrip && body && body.scrollTop > 0) return;
+        startY = e.touches[0].clientY;
+        dy = 0;
+    }, { passive: true });
+
+    panel.addEventListener('touchmove', e => {
+        if (startY === null) return;
+        dy = e.touches[0].clientY - startY;
+        if (dy <= 0) { panel.style.transform = ''; return; }
+        panel.classList.add('is-dragging');
+        panel.style.transform = `translateY(${dy}px)`;
+    }, { passive: true });
+
+    const end = () => {
+        if (startY === null) return;
+        startY = null;
+        panel.classList.remove('is-dragging');
+        panel.style.transform = '';
+        if (dy > 90) closeSheet(menu.id);
+        dy = 0;
+    };
+    panel.addEventListener('touchend', end);
+    panel.addEventListener('touchcancel', end);
 }
 
 function closeFilterMenu() {
@@ -5043,11 +5241,27 @@ async function loadMoreDashboardData() {
     isLoadingMore = false;
 }
 
+const RATE_OPTIONS = [
+    ['sehr_gut',      'r-sehr-gut',      '⭐', 'sehr gut'],
+    ['yes',           'r-ja',            '👍', 'ja'],
+    ['wiederholen',   'r-wiederholen',   '🔁', 'wiederholen'],
+    ['passiv',        'r-passiv',        '💤', 'passiv'],
+    ['warteschlange', 'r-warteschlange', '⏳', 'warteschlange']
+];
+
+function rateGroupHtml(wort) {
+    const w = escapeJs(wort);
+    const buttons = RATE_OPTIONS.map(([key, cls, icon, label]) =>
+        `<button type="button" class="rate-btn ${cls}" onclick="inlineRateWord('${w}', '${key}', this)" title="${label}"><span class="rate-icon" aria-hidden="true">${icon}</span><span>${label}</span></button>`
+    ).join('');
+    return `<div class="rate-group" role="group" aria-label="Kenntnisse bewerten">${buttons}</div>`;
+}
+
 function renderTable(words) {
     const tbody = document.getElementById('wordTableBody');
 
     if (words.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--md-text-muted); padding: 2rem;">Keine Vokabeln gefunden.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--md-text-muted); padding: 2rem;">Keine Vokabeln gefunden.</td></tr>`;
         return;
     }
 
@@ -5080,14 +5294,7 @@ function renderTable(words) {
                     ${verbButtonHtml}
                 </div>
             </td>
-            <td data-label="Score">${escapeHtml(row.Score || 0)}</td>
-            <td class="kenntnisse-cell" data-label="Kenntnisse">
-                <button onclick="inlineRateWord('${escapeJs(row.Wort)}', 'sehr_gut')" class="btn btn-aktiva" style="padding: 8px 12px; font-size: 0.85rem;" title="sehr gut">sehr gut</button>
-                <button onclick="inlineRateWord('${escapeJs(row.Wort)}', 'yes')" class="btn btn-success" style="padding: 8px 12px; font-size: 0.85rem;" title="ja">ja</button>
-                <button onclick="inlineRateWord('${escapeJs(row.Wort)}', 'wiederholen')" class="btn" style="padding: 8px 12px; font-size: 0.85rem; background-color: var(--md-primary);" title="wiederholen">wiederholen</button>
-                <button onclick="inlineRateWord('${escapeJs(row.Wort)}', 'passiv')" class="btn btn-passiv" style="padding: 8px 12px; font-size: 0.85rem;" title="passiv">passiv</button>
-                <button onclick="inlineRateWord('${escapeJs(row.Wort)}', 'warteschlange')" class="btn" style="padding: 8px 12px; font-size: 0.85rem; background-color: #424242;" title="warteschlange">warteschlange</button>
-            </td>
+            <td class="kenntnisse-cell" data-label="Kenntnisse">${rateGroupHtml(row.Wort)}</td>
             <td data-label="Status" class="status-cell">${escapeHtml(row.Status || '')}</td>
             <td class="aktion-cell" data-label="Aktion">
                 <button onclick="editWord(${escapeAttr(JSON.stringify(row))})" class="btn" style="padding: 6px 10px; font-size: 0.75rem;" title="Bearbeiten">Bearbeiten</button>
