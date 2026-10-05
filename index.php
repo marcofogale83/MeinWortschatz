@@ -117,9 +117,9 @@ function jsonForScript($value): string {
 const RATE_OPTIONS = [
     ['sehr_gut',      'r-sehr-gut',      '⭐', 'sehr gut'],
     ['yes',           'r-ja',            '👍', 'ja'],
-    ['wiederholen',   'r-wiederholen',   '🔁', 'wiederholen'],
+    ['wiederholen',   'r-wiederholen',   '🔁', "wieder\u{00AD}holen"],
     ['passiv',        'r-passiv',        '💤', 'passiv'],
-    ['warteschlange', 'r-warteschlange', '⏳', 'warteschlange'],
+    ['warteschlange', 'r-warteschlange', '⏳', "warte\u{00AD}schlange"],
 ];
 
 function jsArg($value): string {
@@ -1526,6 +1526,18 @@ try {
         .btn-secondary { background-color: #424242; color: #e0e0e0; }
         .btn-secondary:hover { background-color: #616161; }
         .btn-info { background-color: #00acc1; color: white; }
+        /* KI-Symbol (Sterne) vor allen KI-Buttons */
+        .ai-btn::before {
+            content: ''; display: inline-block; width: 1.1em; height: 1.1em;
+            margin-right: 0.4em; vertical-align: -0.18em; background-color: currentColor;
+            -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M9 3Q9.9 11.1 17 12Q9.9 12.9 9 21Q8.1 12.9 1 12Q8.1 11.1 9 3ZM19 1.5Q19.4 4.6 22.5 5Q19.4 5.4 19 8.5Q18.6 5.4 15.5 5Q18.6 4.6 19 1.5ZM19 16Q19.35 18.65 22 19Q19.35 19.35 19 22Q18.65 19.35 16 19Q18.65 18.65 19 16Z'/%3E%3C/svg%3E") center / contain no-repeat;
+            mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M9 3Q9.9 11.1 17 12Q9.9 12.9 9 21Q8.1 12.9 1 12Q8.1 11.1 9 3ZM19 1.5Q19.4 4.6 22.5 5Q19.4 5.4 19 8.5Q18.6 5.4 15.5 5Q18.6 4.6 19 1.5ZM19 16Q19.35 18.65 22 19Q19.35 19.35 19 22Q18.65 19.35 16 19Q18.65 18.65 19 16Z'/%3E%3C/svg%3E") center / contain no-repeat;
+        }
+        .edit-image-container { margin-top: 12px; text-align: center; }
+        .edit-image-container img {
+            max-width: 100%; max-height: 240px; border-radius: 8px; cursor: zoom-in;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3); display: block; margin: 0 auto;
+        }
         .btn-info:hover { background-color: #00838f; }
 
         .filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 0.8rem; align-items: center; }
@@ -1547,14 +1559,12 @@ try {
         th { background-color: var(--md-th-bg); font-weight: 600; white-space: nowrap; cursor: pointer; color: var(--md-on-surface); position: sticky; top: 0; z-index: 10; }
         th a { color: var(--md-on-surface); text-decoration: none; display: flex; align-items: center; gap: 4px; }
 
-        th:nth-child(1), td:nth-child(1) { width: 5%; }
-        th:nth-child(2), td:nth-child(2) { width: 11%; }
-        th:nth-child(3), td:nth-child(3) { width: 7%; }
-        th:nth-child(4), td:nth-child(4) { width: 12%; }
+        th:nth-child(1), td:nth-child(1) { width: 6%; }
+        th:nth-child(2), td:nth-child(2) { width: 13%; }
+        th:nth-child(3), td:nth-child(3) { width: 13%; }
+        th:nth-child(4), td:nth-child(4) { width: 38%; }
         th:nth-child(5), td:nth-child(5) { width: 9%; }
-        th:nth-child(6), td:nth-child(6) { width: 32%; }
-        th:nth-child(7), td:nth-child(7) { width: 9%; }
-        th:nth-child(8), td:nth-child(8) { width: 15%; }
+        th:nth-child(6), td:nth-child(6) { width: 21%; }
 
         .wort-cell { font-size: 1.15rem; font-weight: 600; }
         .wort-der { color: var(--md-der); }
@@ -1566,7 +1576,7 @@ try {
         /* Kenntnisse: one connected rating bar instead of 5 loose buttons */
         /* always one row of 5 equal segments; 1px gaps = separator lines */
         .rate-group {
-            display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px;
+            display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 1px;
             width: 100%; border: 1px solid var(--md-border); border-radius: 10px; overflow: hidden;
             background: var(--md-border);
         }
@@ -1574,23 +1584,35 @@ try {
             --c: var(--md-primary);
             display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
             min-width: 0; padding: 6px 4px 5px; border: 0;
-            background: var(--md-surface-card); color: var(--md-text-muted); cursor: pointer;
+            background: var(--c); color: #ffffff; cursor: pointer;
             font: inherit; font-size: clamp(0.6rem, 0.55vw, 0.7rem); font-weight: 600; line-height: 1.1; white-space: nowrap;
             transition: background-color 0.15s, color 0.15s, transform 0.1s;
         }
         .rate-btn .rate-icon { font-size: 1.05rem; line-height: 1; }
-        .rate-btn span:last-child { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-        .rate-btn:hover { background: color-mix(in srgb, var(--c) 20%, var(--md-surface-card)); color: var(--c); }
+        /* long labels break at the soft hyphen (warte-schlange) instead of being cut off */
+        .rate-btn span:last-child { max-width: 100%; white-space: normal; text-align: center; overflow-wrap: anywhere; }
+        .rate-btn:hover { background: color-mix(in srgb, var(--c) 82%, #000); }
         .rate-btn:active { transform: scale(0.94); }
-        .rate-btn:focus-visible { outline: 2px solid var(--c); outline-offset: -2px; }
-        .rate-btn.r-sehr-gut { --c: var(--md-aktiva-green); }
-        .rate-btn.r-ja { --c: var(--md-success); }
+        .rate-btn:focus-visible { outline: 2px solid #ffffff; outline-offset: -3px; }
+        /* same colors as the rating buttons in the standard game */
+        /* green -> blue scale: direkt aktiv (green) -> sehr gut -> ja -> wiederholen (blue) */
+        .rate-btn.r-direkt-aktiv { --c: var(--md-aktiva-green); }
+        .rate-btn.r-sehr-gut { --c: #37987c; }
+        .rate-btn.r-ja { --c: #2a90b0; }
         .rate-btn.r-wiederholen { --c: var(--md-primary); }
         .rate-btn.r-passiv { --c: var(--md-passiv-grey); }
-        .rate-btn.r-warteschlange { --c: #90a4ae; }
+        .rate-btn.r-warteschlange { --c: #424242; }
         .rate-group.is-saving { opacity: 0.5; pointer-events: none; }
         .status-cell { font-weight: 500; }
-        .aktion-cell { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+        .aktion-cell { min-width: 0; }
+        /* Bearbeiten / Üben / Löschen: same segmented shape as the Kenntnisse bar */
+        .rate-btn.a-edit { --c: var(--md-primary); }
+        .rate-btn.a-train { --c: var(--md-success); }
+        .rate-btn.a-delete { --c: var(--md-danger); }
+        /* compact version next to titles in the exercises */
+        .action-group.is-inline { display: inline-grid; width: auto; }
+        .action-group.is-inline .rate-btn { padding: 5px 12px 4px; font-size: 0.7rem; }
+        .action-group.is-inline .rate-btn .rate-icon { font-size: 1rem; }
 
         .view { display: none; }
         .view.active { display: block; }
@@ -1761,8 +1783,18 @@ try {
         .word-display { font-size: 2.2rem; font-weight: 700; margin: 1rem 0 0.3rem 0; text-align: center; }
         .details-box { background: var(--md-surface-card); border: 1px solid var(--md-border); border-radius: 8px; padding: 16px; margin-bottom: 1.5rem; }
         .details-box p { margin: 8px 0; font-size: 0.95rem; }
-        .action-row { display: flex; gap: 8px; margin-top: 1.5rem; flex-wrap: wrap; }
-        .action-row button { flex: 1; min-width: 80px; padding: 14px; font-size: 0.85rem; }
+        /* Rating bar in the standard game: same look as the table, but bigger */
+        .game-rate-group { margin-top: 1.5rem; border-radius: 12px; }
+        .game-rate-group .rate-btn { gap: 6px; min-height: 76px; padding: 12px 4px 10px; font-size: 0.85rem; }
+        .game-rate-group .rate-btn .rate-icon { font-size: 1.9rem; }
+        @media (max-width: 480px) {
+            .game-rate-group .rate-btn { min-height: 68px; padding: 10px 1px 8px; font-size: 0.6rem; letter-spacing: -0.01em; }
+            .game-rate-group .rate-btn .rate-icon { font-size: 1.6rem; }
+        }
+        @media (max-width: 380px) {
+            .game-rate-group .rate-btn { font-size: 0.54rem; }
+            .game-rate-group .rate-btn .rate-icon { font-size: 1.45rem; }
+        }
 
         .quiz-grid {
             display: grid;
@@ -2031,11 +2063,21 @@ try {
             table td::before { content: attr(data-label); font-weight: 600; color: var(--md-text-muted); font-size: 0.8rem; margin-right: 10px; }
             table td.wort-cell { justify-content: space-between; }
             table td.kenntnisse-cell, table td.aktion-cell { justify-content: flex-end; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--md-border); }
-            table td.kenntnisse-cell { flex-direction: column; align-items: stretch; gap: 8px; }
-            .rate-btn { padding: 9px 2px 7px; font-size: 0.64rem; }
+            table td.kenntnisse-cell, table td.aktion-cell { flex-direction: column; align-items: stretch; gap: 8px; }
+            table tr { padding: 12px 10px; }
+            /* 6 segments on a phone: keep labels small so "warte-schlange" still fits */
+            .rate-btn { padding: 9px 1px 7px; font-size: 0.6rem; letter-spacing: -0.01em; }
             .rate-btn .rate-icon { font-size: 1.25rem; }
+            .action-group:not(.is-inline) .rate-btn { font-size: 0.7rem; }
             .chart-wrapper { height: 260px; }
             .quiz-grid { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 440px) {
+            .rate-btn { font-size: 0.55rem; letter-spacing: -0.02em; }
+            .rate-btn .rate-icon { font-size: 1.15rem; }
+        }
+        @media (max-width: 380px) {
+            .rate-btn { font-size: 0.5rem; }
         }
         /* Level path in header (Sprachniveau nach aktiven Wörtern) */
         .level-path { flex: 1 1 420px; max-width: 640px; min-width: 0; min-height: 60px; margin: 0 auto; }
@@ -2156,9 +2198,13 @@ try {
                         </label>
                         <div class="word-hero-row">
                             <input type="text" id="Wort" name="Wort" required autocomplete="off" placeholder="z.B. Haus, laufen, schnell" onkeydown="handleWortKeydown(event)">
-                            <button type="button" class="btn btn-info" onclick="fillWordWithAI()" id="aiFillBtn">🤖 Mit KI ausfüllen</button>
+                            <button type="button" class="btn btn-info ai-btn" onclick="fillWordWithAI()" id="aiFillBtn">Mit KI ausfüllen</button>
+                            <button type="button" class="btn btn-info ai-btn" onclick="generateAiImageForEditWord()" id="editImageBtn" style="display: none;">Bild generieren</button>
                         </div>
                         <p class="word-hero-hint">Gib das Wort ein und lass die KI die restlichen Felder ausfüllen – oder fülle sie unten selbst aus.</p>
+                        <div class="edit-image-container" id="editImageContainer" style="display: none;">
+                            <img id="editImageTag" src="" alt="Wort Bild" onclick="openFullscreenImage(this.src)" title="Zum Vergrößern anklicken">
+                        </div>
                     </div>
 
                     <div class="form-group-section">
@@ -2395,9 +2441,7 @@ try {
                         <tr>
                             <th onclick="setSort('Artikel')">Artikel ↕</th>
                             <th onclick="setSort('Wort')">Wort ↕</th>
-                            <th onclick="setSort('Plural')">Plural ↕</th>
                             <th>Übersetzung</th>
-                            <th>Werkzeuge</th>
                             <th>Kenntnisse</th>
                             <th onclick="setSort('Status')">Status ↕</th>
                             <th>Aktion</th>
@@ -2405,7 +2449,7 @@ try {
                     </thead>
                     <tbody id="wordTableBody">
                         <?php if (empty($initialWords)): ?>
-                            <tr><td colspan="8" style="text-align: center; color: var(--md-text-muted); padding: 2rem;">Keine Vokabeln gefunden.</td></tr>
+                            <tr><td colspan="6" style="text-align: center; color: var(--md-text-muted); padding: 2rem;">Keine Vokabeln gefunden.</td></tr>
                         <?php else: ?>
                             <?php foreach ($initialWords as $row):
                                 $artClass = '';
@@ -2415,30 +2459,21 @@ try {
                                 elseif ($artLower === 'das') $artClass = 'wort-das';
                                 else $artClass = 'wort-other';
 
-                                $googleQueryUrl = 'https://www.google.ch/search?q=' . urlencode($row['Wort'] ?? '');
-                                $translateUrl = 'https://translate.google.com/?sl=de&tl=fr&text=' . urlencode($row['Wort'] ?? '') . '&op=translate';
                                 $isVerb = (isset($row['VerbFlag']) && (int)$row['VerbFlag'] === 1);
                                 $wortArg = jsArg($row['Wort'] ?? '');
                             ?>
                                 <tr>
                                     <td data-label="Artikel"><strong><?= htmlspecialchars($row['Artikel'] ?? '') ?></strong></td>
                                     <td data-label="Wort" class="wort-cell <?= $artClass ?>"><?= htmlspecialchars($row['Wort'] ?? '') ?></td>
-                                    <td data-label="Plural"><?= !$isVerb ? htmlspecialchars($row['Plural'] ?? '') : '' ?></td>
                                     <td data-label="Übersetzung">
                                         <span class="story-word-trans" style="display: none; color: var(--md-accent-text);"><?= htmlspecialchars($row['Übersetzung'] ?? '') ?></span>
                                         <button type="button" class="btn btn-secondary" style="padding: 2px 6px; font-size: 0.75rem; margin-top: 4px;" onclick="toggleStoryTransTable(this)">Übersetzung anzeigen</button>
                                     </td>
-                                    <td data-label="Werkzeuge">
-                                        <div style="display: flex; gap: 4px; flex-wrap: wrap;">
-                                            <a href="<?= htmlspecialchars($googleQueryUrl) ?>" target="_blank" rel="noopener noreferrer" class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.78rem;">🔍 Google</a>
-                                            <a href="<?= htmlspecialchars($translateUrl) ?>" target="_blank" rel="noopener noreferrer" class="btn btn-info" style="padding: 4px 8px; font-size: 0.78rem;">🌐 Übersetzung</a>
-                                            <?php if ($isVerb): ?>
-                                                <a href="https://www.verbformen.de/konjugation/<?= urlencode($row['Wort'] ?? '') ?>.htm" target="_blank" rel="noopener noreferrer" class="btn" style="padding: 4px 8px; font-size: 0.78rem; background-color: #6a1b9a;">📖 Konjugation</a>
-                                            <?php endif; ?>
-                                        </div>
-                                    </td>
                                     <td class="kenntnisse-cell" data-label="Kenntnisse">
                                         <div class="rate-group" role="group" aria-label="Kenntnisse bewerten">
+                                            <?php if (strtolower(trim($row['Status'] ?? '')) !== 'aktiva'): ?>
+                                                <button type="button" class="rate-btn r-direkt-aktiv" onclick="inlinePromoteWord(<?= $wortArg ?>, this)" title="Direkt aktiv (Score 10)"><span class="rate-icon" aria-hidden="true">🚀</span><span>direkt aktiv</span></button>
+                                            <?php endif; ?>
                                             <?php foreach (RATE_OPTIONS as [$rKey, $rClass, $rIcon, $rLabel]): ?>
                                                 <button type="button" class="rate-btn <?= $rClass ?>" onclick="inlineRateWord(<?= $wortArg ?>, '<?= $rKey ?>', this)" title="<?= $rLabel ?>"><span class="rate-icon" aria-hidden="true"><?= $rIcon ?></span><span><?= $rLabel ?></span></button>
                                             <?php endforeach; ?>
@@ -2446,9 +2481,7 @@ try {
                                     </td>
                                     <td data-label="Status" class="status-cell"><?= htmlspecialchars($row['Status'] ?? '') ?></td>
                                     <td class="aktion-cell" data-label="Aktion">
-                                        <button onclick="editWord(<?= htmlspecialchars(json_encode($row), ENT_QUOTES, 'UTF-8') ?>)" class="btn" style="padding: 6px 10px; font-size: 0.75rem;" title="Bearbeiten">Bearbeiten</button>
-                                        <button onclick="trainSpecificWord(<?= $wortArg ?>)" class="btn btn-success" style="padding: 6px 10px; font-size: 0.75rem;" title="Üben">Üben</button>
-                                        <button onclick="deleteWord(<?= $wortArg ?>)" class="btn btn-danger" style="padding: 6px 10px; font-size: 0.75rem;" title="Löschen">Löschen</button>
+                                        <div class="rate-group action-group" role="group" aria-label="Wort-Aktionen"><button type="button" class="rate-btn a-edit" onclick="editWord(<?= htmlspecialchars(json_encode($row), ENT_QUOTES, 'UTF-8') ?>)" title="Bearbeiten"><span class="rate-icon" aria-hidden="true">✏️</span><span>Bear&shy;beiten</span></button><button type="button" class="rate-btn a-train" onclick="trainSpecificWord(<?= $wortArg ?>)" title="Üben"><span class="rate-icon" aria-hidden="true">🎯</span><span>Üben</span></button><button type="button" class="rate-btn a-delete" onclick="deleteWord(<?= $wortArg ?>)" title="Löschen"><span class="rate-icon" aria-hidden="true">🗑️</span><span>Löschen</span></button></div>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
@@ -2462,8 +2495,12 @@ try {
     <div id="game-view" class="view">
         <div class="game-container">
             <header>
-                <h1>🎯 Vokabeltraining</h1>
-                <button onclick="switchView('dashboard')" class="btn btn-secondary" style="padding: 8px 14px; font-size: 0.85rem;">🚪 Dashboard</button>
+                <div class="header-title">
+                    <button type="button" class="back-icon" onclick="switchView('dashboard')" title="Zurück zum Dashboard" aria-label="Zurück zum Dashboard">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+                    </button>
+                    <h1>🎯 Vokabeltraining</h1>
+                </div>
             </header>
 
             <div id="gameSetupCard" class="card">
@@ -2547,14 +2584,6 @@ try {
                         </details>
                     </div>
 
-                    <!-- Toggle Button for Original or Invertiert -->
-                    <div style="margin-bottom: 1.2rem;">
-                        <label style="margin-bottom: 6px;">Reihenfolge-Modus:</label>
-                        <button type="button" class="toggle-switch-btn" id="orderModeToggleBtn" onclick="toggleOrderMode()">
-                            <span>Modus: <strong id="orderModeLabel">Original</strong></span>
-                            <span class="toggle-switch-badge" id="orderModeBadge">STANDARD</span>
-                        </button>
-                    </div>
 
                     <button type="submit" class="btn" style="width: 100%; margin-top: 1rem; padding: 14px; font-size: 1rem;">Mit dem Üben beginnen 🚀</button>
                 </form>
@@ -2567,8 +2596,7 @@ try {
                     <div style="display: flex; justify-content: space-between; align-items:center; font-size: 0.85rem; color: var(--md-text-muted); flex-wrap: wrap; gap: 6px;">
                         <span id="gameMetaInfo"></span>
                         <div style="display: flex; gap: 6px;">
-                            <button onclick="openEditFromGame()" class="btn btn-secondary" style="padding: 6px 10px; font-size: 0.75rem;">✏️ Wort bearbeiten</button>
-                            <button onclick="deleteWordFromGame()" class="btn btn-danger" style="padding: 6px 10px; font-size: 0.75rem;">🗑️ Wort löschen</button>
+                            <div class="rate-group action-group is-inline" role="group" aria-label="Wort-Aktionen"><button type="button" class="rate-btn a-edit" onclick="openEditFromGame()" title="Bearbeiten"><span class="rate-icon" aria-hidden="true">✏️</span><span>Bear&shy;beiten</span></button><button type="button" class="rate-btn a-delete" onclick="deleteWordFromGame()" title="Löschen"><span class="rate-icon" aria-hidden="true">🗑️</span><span>Löschen</span></button></div>
                         </div>
                     </div>
 
@@ -2589,15 +2617,10 @@ try {
 
                         <div id="imageDisplayContainer" style="margin: 12px 0; text-align: center;">
                             <img id="generatedImageTag" src="" alt="Wort Bild" onclick="openFullscreenImage(this.src)" style="max-width: 100%; max-height: 300px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); display: none; margin: 0 auto 10px auto;" title="Zum Vergrößern anklicken">
-                            <button type="button" class="btn btn-info" onclick="generateAiImageForCurrentWord()" id="generateImageBtn" style="font-size: 0.8rem; padding: 6px 12px;">🤖 Bild generieren</button>
+                            <button type="button" class="btn btn-info ai-btn" onclick="generateAiImageForCurrentWord()" id="generateImageBtn" style="font-size: 0.8rem; padding: 6px 12px;">Bild generieren</button>
                         </div>
 
                         <p><strong>Synonym:</strong> <span id="gSyn" style="color: var(--md-accent-text); font-size: 1.0rem;"></span></p>
-                        <p><strong>Externe Werkzeuge:</strong>
-                            <a id="gSearchLink" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-secondary" style="padding: 2px 8px; font-size: 0.8rem; margin-left: 4px;">🔍 Google</a>
-                            <a id="gTranslateLink" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-info" style="padding: 2px 8px; font-size: 0.8rem; margin-left: 4px;">🌐 Übersetzung</a>
-                            <a id="gVerbLink" href="#" target="_blank" rel="noopener noreferrer" class="btn" style="padding: 2px 8px; font-size: 0.8rem; margin-left: 4px; background-color: #6a1b9a; display:none;">📖 Konjugation</a>
-                        </p>
                         <p><strong>Thema:</strong> <span id="gThema"></span></p>
                         <p><strong>Artikel:</strong> <span id="gArt"></span></p>
                         <p><strong>Plural:</strong> <span id="gPlural"></span></p>
@@ -2636,17 +2659,13 @@ try {
                         </div>
                     </div>
 
-                    <div class="action-row">
-                        <button type="button" onclick="submitGameAnswer('sehr_gut')" class="btn btn-aktiva">sehr gut ⭐</button>
-                        <button type="button" onclick="submitGameAnswer('yes')" class="btn btn-success">ja 👍</button>
-                        <button type="button" onclick="submitGameAnswer('wiederholen')" class="btn" style="background-color: var(--md-primary);">wiederholen</button>
-                        <button type="button" onclick="submitGameAnswer('passiv')" class="btn btn-passiv">passiv</button>
-                        <button type="button" onclick="submitGameAnswer('warteschlange')" class="btn" style="background-color: #424242;">warteschlange</button>
+                    <div class="rate-group game-rate-group" role="group" aria-label="Kenntnisse bewerten">
+                        <button type="button" class="rate-btn r-direkt-aktiv" id="directPromoteContainer" onclick="directPromoteCurrentWord()" title="Direkt aktiv (Score 10)"><span class="rate-icon" aria-hidden="true">🚀</span><span>direkt aktiv</span></button>
+                        <?php foreach (RATE_OPTIONS as [$rKey, $rClass, $rIcon, $rLabel]): ?>
+                            <button type="button" class="rate-btn <?= $rClass ?>" onclick="submitGameAnswer('<?= $rKey ?>')" title="<?= $rLabel ?>"><span class="rate-icon" aria-hidden="true"><?= $rIcon ?></span><span><?= $rLabel ?></span></button>
+                        <?php endforeach; ?>
                     </div>
 
-                    <div style="margin-top: 10px;" id="directPromoteContainer">
-                        <button type="button" onclick="directPromoteCurrentWord()" class="btn btn-aktiva" style="width: 100%;">🚀 Direkt aktiv (Score 10)</button>
-                    </div>
 
                     <div style="text-align: center; margin-top: 1.5rem; border-top: 1px solid var(--md-border); padding-top: 1rem;">
                         <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Trainingseinstellungen ändern</button>
@@ -2697,8 +2716,7 @@ try {
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 8px;">
                         <h2 style="margin: 0;" id="dddGameTitle">🎯 Der-Die-Das Training</h2>
                         <div style="display: flex; gap: 6px; align-items: center;">
-                            <button onclick="openEditFromDdd()" class="btn btn-secondary" style="padding: 6px 10px; font-size: 0.75rem;">✏️ Wort bearbeiten</button>
-                            <button onclick="deleteWordFromDdd()" class="btn btn-danger" style="padding: 6px 10px; font-size: 0.75rem;">🗑️ Wort löschen</button>
+                            <div class="rate-group action-group is-inline" role="group" aria-label="Wort-Aktionen"><button type="button" class="rate-btn a-edit" onclick="openEditFromDdd()" title="Bearbeiten"><span class="rate-icon" aria-hidden="true">✏️</span><span>Bear&shy;beiten</span></button><button type="button" class="rate-btn a-delete" onclick="deleteWordFromDdd()" title="Löschen"><span class="rate-icon" aria-hidden="true">🗑️</span><span>Löschen</span></button></div>
                             <div id="dddStreakCounter" style="background: var(--md-surface-card); border: 1px solid var(--md-border); padding: 6px 14px; border-radius: 8px; font-weight: 600; color: var(--md-accent-text); font-size: 0.95rem;">
                                 🌱 Streak: <span id="dddStreakValue">0</span> / 10
                             </div>
@@ -2770,7 +2788,7 @@ try {
                     </div>
 
                     <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 1.5rem;">
-                        <button type="button" onclick="checkUserStoryWithAI()" class="btn btn-success" id="checkStoryBtn" style="flex: 1; min-width: 150px;">🤖 Geschichte korrigieren</button>
+                        <button type="button" onclick="checkUserStoryWithAI()" class="btn btn-success ai-btn" id="checkStoryBtn" style="flex: 1; min-width: 150px;">Geschichte korrigieren</button>
                         <button type="button" onclick="loadNewStoryWriter()" class="btn btn-secondary" style="flex: 1; min-width: 150px;">🔄 Neue Wörter laden</button>
                     </div>
 
@@ -2991,7 +3009,7 @@ async function generateAiImageForCurrentWord() {
     const btn = document.getElementById('generateImageBtn');
     const originalText = btn.textContent;
     btn.disabled = true;
-    btn.textContent = '🤖 Generiere KI-Szene...';
+    btn.textContent = 'Generiere KI-Szene...';
 
     try {
         const res = await fetch('index.php?api=generate_ai_image&_ts=' + Date.now(), {
@@ -3033,7 +3051,7 @@ async function generateAiImageForCurrentWord() {
         alert('Fehler: ' + err.message);
     } finally {
         btn.disabled = false;
-        if (btn.textContent === '🤖 Generiere KI-Szene...') {
+        if (btn.textContent === 'Generiere KI-Szene...') {
             btn.textContent = originalText;
         }
     }
@@ -3048,7 +3066,7 @@ async function checkAndLoadImageForCurrentWord() {
 
     imgTag.src = '';
     imgTag.style.display = 'none';
-    btn.textContent = '🤖 Bild generieren';
+    btn.textContent = 'Bild generieren';
 
     try {
         const checkRes = await fetch(imageUrl, { cache: 'no-store' });
@@ -3071,6 +3089,109 @@ async function checkAndLoadImageForCurrentWord() {
     }
 }
 
+// ===== Bild im "Wort bearbeiten"-Panel (wie im Standard-Training) =====
+function hideEditImage() {
+    const box = document.getElementById('editImageContainer');
+    const imgTag = document.getElementById('editImageTag');
+    const btn = document.getElementById('editImageBtn');
+    imgTag.onload = null;
+    imgTag.onerror = null;
+    imgTag.src = '';
+    box.style.display = 'none';
+    btn.style.display = 'none';
+    btn.textContent = 'Bild generieren';
+}
+
+async function loadEditImage(word) {
+    const box = document.getElementById('editImageContainer');
+    const imgTag = document.getElementById('editImageTag');
+    const btn = document.getElementById('editImageBtn');
+
+    hideEditImage();
+    btn.style.display = '';
+    if (!word) return;
+
+    const imageUrl = 'index.php?api=view_image&word=' + encodeURIComponent(word) + '&_ts=' + Date.now();
+    try {
+        const checkRes = await fetch(imageUrl, { cache: 'no-store' });
+        if (checkRes.status === 204 || checkRes.status === 404 || checkRes.status === 401) return;
+        // the panel may have been closed or switched to another word meanwhile
+        if (document.getElementById('original_wort').value !== word) return;
+
+        imgTag.onload = () => {
+            box.style.display = 'block';
+            btn.textContent = 'Bild neu generieren';
+        };
+        imgTag.onerror = () => { box.style.display = 'none'; };
+        imgTag.src = imageUrl;
+    } catch (err) {
+        console.error('Bild konnte nicht geladen werden', err);
+    }
+}
+
+async function generateAiImageForEditWord() {
+    // the image is stored on the saved word, so use the original name (not unsaved edits)
+    const word = document.getElementById('original_wort').value;
+    if (!word) {
+        alert('Bitte speichere das Wort zuerst.');
+        return;
+    }
+
+    const btn = document.getElementById('editImageBtn');
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Generiere KI-Szene...';
+
+    try {
+        const res = await fetch('index.php?api=generate_ai_image&_ts=' + Date.now(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            cache: 'no-store',
+            body: JSON.stringify({
+                word: word,
+                translation: document.getElementById('Übersetzung').value || '',
+                thema: document.getElementById('Thema').value || ''
+            })
+        });
+
+        const textResponse = await res.text();
+        let data;
+        try {
+            data = JSON.parse(textResponse);
+        } catch (jsonErr) {
+            console.error('Server raw response:', textResponse);
+            throw new Error('Server returned invalid response format.');
+        }
+
+        if (data.error === 'Unauthorized') {
+            window.location.href = 'login.php';
+            return;
+        }
+
+        if (data.success && data.image_data) {
+            if (document.getElementById('original_wort').value === word) {
+                const imgTag = document.getElementById('editImageTag');
+                imgTag.onload = null;
+                imgTag.onerror = null;
+                imgTag.src = data.image_data;
+                document.getElementById('editImageContainer').style.display = 'block';
+                btn.textContent = 'Bild neu generieren';
+            }
+            showAlert('Visuelle Szene erfolgreich von Google AI generiert und gespeichert!');
+        } else {
+            alert(data.error || 'Fehler bei der Bildgenerierung.');
+        }
+    } catch (err) {
+        console.error('Bildgenerierung fehlgeschlagen:', err);
+        alert('Fehler: ' + err.message);
+    } finally {
+        btn.disabled = false;
+        if (btn.textContent === 'Generiere KI-Szene...') {
+            btn.textContent = originalText;
+        }
+    }
+}
+
 async function fillWordWithAI() {
     const wortInput = document.getElementById('Wort');
     const wordValue = wortInput.value.trim();
@@ -3084,7 +3205,7 @@ async function fillWordWithAI() {
     const btn = document.getElementById('aiFillBtn');
     const originalText = btn.textContent;
     btn.disabled = true;
-    btn.textContent = '🤖 Analysiere...';
+    btn.textContent = 'Analysiere...';
 
     try {
         const res = await fetch('index.php?api=ai_fill_word&_ts=' + Date.now(), {
@@ -3566,24 +3687,6 @@ function toggleSortOrder() {
         input.value = 'ASC';
         label.textContent = 'Original (Aufsteigend)';
         badge.textContent = 'ASC';
-    }
-}
-
-function toggleOrderMode() {
-    const input = document.getElementById('sortOrderInput');
-    const label = document.getElementById('orderModeLabel');
-    const badge = document.getElementById('orderModeBadge');
-
-    if (input.value === 'ASC') {
-        input.value = 'DESC';
-        label.textContent = 'Invertiert';
-        badge.textContent = 'INVERTIERT';
-        badge.style.backgroundColor = '#e53935';
-    } else {
-        input.value = 'ASC';
-        label.textContent = 'Original';
-        badge.textContent = 'STANDARD';
-        badge.style.backgroundColor = 'var(--md-primary)';
     }
 }
 
@@ -4337,7 +4440,7 @@ async function checkUserStoryWithAI() {
         resultBox.style.display = 'block';
     } finally {
         btn.disabled = false;
-        btn.textContent = '🤖 Geschichte korrigieren';
+        btn.textContent = 'Geschichte korrigieren';
     }
 }
 
@@ -4557,22 +4660,11 @@ async function fetchNextGameWord() {
         if (currentStatusLower === 'aktiva') {
             promoteContainer.style.display = 'none';
         } else {
-            promoteContainer.style.display = 'block';
+            promoteContainer.style.display = '';
         }
 
         document.getElementById('gTrans').textContent = currentGameWord.Übersetzung;
         document.getElementById('gSyn').textContent = currentGameWord.synonym || '-';
-        document.getElementById('gSearchLink').href = 'https://www.google.ch/search?q=' + encodeURIComponent(currentGameWord.Wort || '');
-        document.getElementById('gTranslateLink').href = 'https://translate.google.com/?sl=de&tl=fr&text=' + encodeURIComponent(currentGameWord.Wort || '') + '&op=translate';
-
-        const verbLink = document.getElementById('gVerbLink');
-        if (currentGameWord.VerbFlag == 1) {
-            verbLink.href = 'https://www.verbformen.de/konjugation/' + encodeURIComponent(currentGameWord.Wort || '') + '.htm';
-            verbLink.style.display = 'inline-flex';
-        } else {
-            verbLink.style.display = 'none';
-        }
-
         document.getElementById('gThema').textContent = currentGameWord.Thema || '-';
         document.getElementById('gArt').textContent = currentGameWord.Artikel || 'Keiner';
         document.getElementById('gPlural').textContent = currentGameWord.Plural || '-';
@@ -4766,10 +4858,7 @@ function renderPopupActionButtons(wordObj) {
     const isAlreadyAktiva = (wordObj.Status || '').toLowerCase().trim() === 'aktiva';
 
     container.innerHTML = `
-        <button type="button" class="btn" style="flex: 1; min-width: 45%; padding: 6px; font-size: 0.8rem;" onclick="editWordFromPopup(${rowJson})">✏️ Bearbeiten</button>
-        <button type="button" class="btn btn-success" style="flex: 1; min-width: 45%; padding: 6px; font-size: 0.8rem;" onclick="trainSpecificWord('${escapeJs(wordObj.Wort)}')">🚀 Üben</button>
-        ${!isAlreadyAktiva ? `<button type="button" class="btn btn-aktiva" style="flex: 1; min-width: 45%; padding: 6px; font-size: 0.8rem;" onclick="directPromoteFromPopup('${escapeJs(wordObj.Wort)}')">🚀 Direkt aktiv</button>` : ''}
-        <button type="button" class="btn btn-danger" style="flex: 1; min-width: 45%; padding: 6px; font-size: 0.8rem;" onclick="deleteWordFromPopup('${escapeJs(wordObj.Wort)}')">🗑️ Löschen</button>
+        <div class="rate-group action-group" role="group" aria-label="Wort-Aktionen"><button type="button" class="rate-btn a-edit" onclick="editWordFromPopup(${rowJson})" title="Bearbeiten"><span class="rate-icon" aria-hidden="true">✏️</span><span>Bear&shy;beiten</span></button><button type="button" class="rate-btn a-train" onclick="trainSpecificWord('${escapeJs(wordObj.Wort)}')" title="Üben"><span class="rate-icon" aria-hidden="true">🎯</span><span>Üben</span></button>${!isAlreadyAktiva ? `<button type="button" class="rate-btn r-direkt-aktiv" onclick="directPromoteFromPopup('${escapeJs(wordObj.Wort)}')" title="Direkt aktiv (Score 10)"><span class="rate-icon" aria-hidden="true">🚀</span><span>direkt aktiv</span></button>` : ''}<button type="button" class="rate-btn a-delete" onclick="deleteWordFromPopup('${escapeJs(wordObj.Wort)}')" title="Löschen"><span class="rate-icon" aria-hidden="true">🗑️</span><span>Löschen</span></button></div>
     `;
 }
 
@@ -5071,6 +5160,36 @@ async function inlineRateWord(wort, result, btn) {
     }
 }
 
+async function inlinePromoteWord(wort, btn) {
+    const group = btn ? btn.closest('.rate-group') : null;
+    if (group) group.classList.add('is-saving');
+    try {
+        const res = await fetch('index.php?api=direct_promote&_ts=' + Date.now(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            cache: 'no-store',
+            body: JSON.stringify({ Wort: wort })
+        });
+        const result = await res.json();
+        if (result.error === 'Unauthorized') {
+            window.location.href = 'login.php';
+            return;
+        }
+        if (result.success) {
+            todayReviewedCount++;
+            updateDailyTrackerUI();
+            showAlert(result.message || `Wort '${wort}' ist jetzt aktiv.`);
+            await refreshMetadata();
+            loadDashboardData(true);
+        } else if (group) {
+            group.classList.remove('is-saving');
+        }
+    } catch (err) {
+        console.error('Fehler beim direkten Aktivieren', err);
+        if (group) group.classList.remove('is-saving');
+    }
+}
+
 function openEditFromGame() {
     if (!currentGameWord) return;
     switchView('dashboard');
@@ -5244,14 +5363,17 @@ async function loadMoreDashboardData() {
 const RATE_OPTIONS = [
     ['sehr_gut',      'r-sehr-gut',      '⭐', 'sehr gut'],
     ['yes',           'r-ja',            '👍', 'ja'],
-    ['wiederholen',   'r-wiederholen',   '🔁', 'wiederholen'],
+    ['wiederholen',   'r-wiederholen',   '🔁', 'wieder\u00ADholen'],
     ['passiv',        'r-passiv',        '💤', 'passiv'],
-    ['warteschlange', 'r-warteschlange', '⏳', 'warteschlange']
+    ['warteschlange', 'r-warteschlange', '⏳', 'warte\u00ADschlange']
 ];
 
-function rateGroupHtml(wort) {
+function rateGroupHtml(wort, status) {
     const w = escapeJs(wort);
-    const buttons = RATE_OPTIONS.map(([key, cls, icon, label]) =>
+    const isAktiva = (status || '').toLowerCase().trim() === 'aktiva';
+    const promote = isAktiva ? '' :
+        `<button type="button" class="rate-btn r-direkt-aktiv" onclick="inlinePromoteWord('${w}', this)" title="Direkt aktiv (Score 10)"><span class="rate-icon" aria-hidden="true">🚀</span><span>direkt aktiv</span></button>`;
+    const buttons = promote + RATE_OPTIONS.map(([key, cls, icon, label]) =>
         `<button type="button" class="rate-btn ${cls}" onclick="inlineRateWord('${w}', '${key}', this)" title="${label}"><span class="rate-icon" aria-hidden="true">${icon}</span><span>${label}</span></button>`
     ).join('');
     return `<div class="rate-group" role="group" aria-label="Kenntnisse bewerten">${buttons}</div>`;
@@ -5261,45 +5383,27 @@ function renderTable(words) {
     const tbody = document.getElementById('wordTableBody');
 
     if (words.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--md-text-muted); padding: 2rem;">Keine Vokabeln gefunden.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--md-text-muted); padding: 2rem;">Keine Vokabeln gefunden.</td></tr>`;
         return;
     }
 
     tbody.innerHTML = '';
     words.forEach(row => {
         const artClass = getArticleColorClass(row.Artikel);
-        const googleUrl = 'https://www.google.ch/search?q=' + encodeURIComponent(row.Wort || '');
-        const translateUrl = 'https://translate.google.com/?sl=de&tl=fr&text=' + encodeURIComponent(row.Wort || '') + '&op=translate';
         const isVerb = (row.VerbFlag == 1);
-
-        let verbButtonHtml = '';
-        if (isVerb) {
-            const verbformenUrl = 'https://www.verbformen.de/konjugation/' + encodeURIComponent(row.Wort || '') + '.htm';
-            verbButtonHtml = `<a href="${verbformenUrl}" target="_blank" rel="noopener noreferrer" class="btn" style="padding: 4px 8px; font-size: 0.78rem; background-color: #6a1b9a;">📖 Konjugation</a>`;
-        }
 
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td data-label="Artikel"><strong>${escapeHtml(row.Artikel || '')}</strong></td>
             <td data-label="Wort" class="wort-cell ${artClass}">${escapeHtml(row.Wort || '')}</td>
-            <td data-label="Plural">${!isVerb ? escapeHtml(row.Plural || '') : ''}</td>
             <td data-label="Übersetzung">
                 <span class="story-word-trans" style="display: none; color: var(--md-accent-text);">${escapeHtml(row.Übersetzung || '')}</span>
                 <button type="button" class="btn btn-secondary" style="padding: 2px 6px; font-size: 0.75rem; margin-top: 4px;" onclick="toggleStoryTransTable(this)">Übersetzung anzeigen</button>
             </td>
-            <td data-label="Werkzeuge">
-                <div style="display: flex; gap: 4px; flex-wrap: wrap;">
-                    <a href="${googleUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.78rem;">🔍 Google</a>
-                    <a href="${translateUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-info" style="padding: 4px 8px; font-size: 0.78rem;">🌐 Übersetzung</a>
-                    ${verbButtonHtml}
-                </div>
-            </td>
-            <td class="kenntnisse-cell" data-label="Kenntnisse">${rateGroupHtml(row.Wort)}</td>
+            <td class="kenntnisse-cell" data-label="Kenntnisse">${rateGroupHtml(row.Wort, row.Status)}</td>
             <td data-label="Status" class="status-cell">${escapeHtml(row.Status || '')}</td>
             <td class="aktion-cell" data-label="Aktion">
-                <button onclick="editWord(${escapeAttr(JSON.stringify(row))})" class="btn" style="padding: 6px 10px; font-size: 0.75rem;" title="Bearbeiten">Bearbeiten</button>
-                <button onclick="trainSpecificWord('${escapeJs(row.Wort)}')" class="btn btn-success" style="padding: 6px 10px; font-size: 0.75rem;" title="Üben">Üben</button>
-                <button onclick="deleteWord('${escapeJs(row.Wort)}')" class="btn btn-danger" style="padding: 6px 10px; font-size: 0.75rem;" title="Löschen">Löschen</button>
+                <div class="rate-group action-group" role="group" aria-label="Wort-Aktionen"><button type="button" class="rate-btn a-edit" onclick="editWord(${escapeAttr(JSON.stringify(row))})" title="Bearbeiten"><span class="rate-icon" aria-hidden="true">✏️</span><span>Bear&shy;beiten</span></button><button type="button" class="rate-btn a-train" onclick="trainSpecificWord('${escapeJs(row.Wort)}')" title="Üben"><span class="rate-icon" aria-hidden="true">🎯</span><span>Üben</span></button><button type="button" class="rate-btn a-delete" onclick="deleteWord('${escapeJs(row.Wort)}')" title="Löschen"><span class="rate-icon" aria-hidden="true">🗑️</span><span>Löschen</span></button></div>
             </td>
         `;
         tbody.appendChild(tr);
@@ -5390,6 +5494,7 @@ function resetForm() {
     document.getElementById('Score').value = '0';
     updateStatusFromScore();
     toggleVerbFields();
+    hideEditImage();
     document.getElementById('formTitle').textContent = 'Neues Wort hinzufügen';
     document.getElementById('formSubmitBtn').textContent = 'Wort speichern';
     document.getElementById('formContainer').classList.remove('active');
@@ -5419,6 +5524,8 @@ function editWord(row) {
     document.getElementById('Beispiel').value = row.Beispiel || '';
     document.getElementById('Score').value = row.Score || 0;
     updateStatusFromScore();
+
+    loadEditImage(row.Wort);
 
     document.getElementById('formTitle').textContent = 'Wort bearbeiten';
     document.getElementById('formSubmitBtn').textContent = 'Wort aktualisieren';
