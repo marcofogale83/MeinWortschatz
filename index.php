@@ -1547,6 +1547,12 @@ try {
             -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M9 3Q9.9 11.1 17 12Q9.9 12.9 9 21Q8.1 12.9 1 12Q8.1 11.1 9 3ZM19 1.5Q19.4 4.6 22.5 5Q19.4 5.4 19 8.5Q18.6 5.4 15.5 5Q18.6 4.6 19 1.5ZM19 16Q19.35 18.65 22 19Q19.35 19.35 19 22Q18.65 19.35 16 19Q18.65 18.65 19 16Z'/%3E%3C/svg%3E") center / contain no-repeat;
             mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M9 3Q9.9 11.1 17 12Q9.9 12.9 9 21Q8.1 12.9 1 12Q8.1 11.1 9 3ZM19 1.5Q19.4 4.6 22.5 5Q19.4 5.4 19 8.5Q18.6 5.4 15.5 5Q18.6 4.6 19 1.5ZM19 16Q19.35 18.65 22 19Q19.35 19.35 19 22Q18.65 19.35 16 19Q18.65 18.65 19 16Z'/%3E%3C/svg%3E") center / contain no-repeat;
         }
+        /* "Mit KI trainieren" Dropdown im Standard-Training */
+        .ai-train-menu { margin-top: 1rem; border-top: 1px solid var(--md-border); padding-top: 12px; }
+        .ai-train-summary { list-style: none; width: 100%; display: flex; align-items: center; justify-content: center; cursor: pointer; user-select: none; }
+        .ai-train-summary::-webkit-details-marker { display: none; }
+        .ai-train-summary::after { content: '▼'; font-size: 0.7rem; margin-left: 0.5em; transition: transform 0.2s; }
+        .ai-train-menu[open] > .ai-train-summary::after { transform: rotate(180deg); }
         .edit-image-container { margin-top: 12px; text-align: center; }
         .edit-image-container img {
             max-width: 100%; max-height: 240px; border-radius: 8px; cursor: zoom-in;
@@ -2656,7 +2662,9 @@ try {
                         <p id="gDates" style="font-size: 0.8rem; color: var(--md-text-muted); margin-top: 10px;"></p>
                     </div>
 
-                    <div style="margin-top: 1rem; border-top: 1px solid var(--md-border); padding-top: 12px; display: flex; flex-direction: column; gap: 12px;">
+                    <details class="ai-train-menu" id="aiTrainDetails">
+                    <summary class="btn btn-info ai-btn ai-train-summary">Mit KI trainieren</summary>
+                    <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 12px;">
                         <div>
                             <button type="button" class="btn btn-info" onclick="suggestSentenceWithAI()" id="suggestSentenceBtn" style="width: 100%; margin-bottom: 8px;">💡 Satz vorschlagen</button>
                             <div id="aiSuggestionResult" style="display: none; background: var(--md-surface); border: 1px solid var(--md-border); padding: 12px; border-radius: 8px; font-size: 0.95rem; width: 100%;">
@@ -2681,6 +2689,7 @@ try {
                             </div>
                         </div>
                     </div>
+                    </details>
 
                     <div class="rate-group game-rate-group" role="group" aria-label="Kenntnisse bewerten">
                         <button type="button" class="rate-btn r-direkt-aktiv" id="directPromoteContainer" onclick="directPromoteCurrentWord()" title="Direkt aktiv (Score 10)"><span class="rate-icon" aria-hidden="true">🚀</span><span>direkt aktiv</span></button>
@@ -4704,6 +4713,7 @@ async function fetchNextGameWord() {
         document.getElementById('aiSuggestionResult').style.display = 'none';
         document.getElementById('sentenceWriterContainer').style.display = 'none';
         document.getElementById('toggleSentenceWriterBtn').textContent = '✍️ Satz schreiben';
+        document.getElementById('aiTrainDetails').open = false;
 
         document.getElementById('detailsBox').style.display = 'none';
         document.getElementById('revealBtn').innerHTML = 'Übersetzung anzeigen';
