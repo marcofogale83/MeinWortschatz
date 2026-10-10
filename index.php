@@ -231,6 +231,44 @@ function buildGameFilter(array $input, bool $requireThema = false): array {
     return [$where, $params];
 }
 
+// Pick a random word from the top of the review queue that matches the game settings.
+// $extraWhere restricts the pool further (also applied to the fallback when no word matches the filters).
+function pickGameWord(PDO $pdo, int $uid, array $input, string $extraWhere = ''): array {
+    $sortOrder = ($input['sort_order'] ?? 'ASC') === 'DESC' ? 'DESC' : 'ASC';
+    [$filterWhere, $params] = buildGameFilter($input, true);
+    array_unshift($params, $uid);
+    $where = "WHERE user_id = ?" . $extraWhere . $filterWhere;
+
+    $hasFilters = !empty($input['statuses']) || !empty($input['sharepoint_lists']) || !empty($input['themen']) || !empty($input['categories']);
+
+    if ($hasFilters) {
+        $countStmt = $pdo->prepare("SELECT COUNT(*) FROM meine_wortschatz " . $where);
+        $countStmt->execute($params);
+        $totalMatches = (int)$countStmt->fetchColumn();
+
+        $dynamicLimit = max(1, (int)floor($totalMatches / 2));
+    } else {
+        $dynamicLimit = 1000;
+    }
+
+    $stmt = $pdo->prepare("SELECT * FROM (SELECT " . WORD_COLS . " FROM meine_wortschatz " . $where . " ORDER BY NachsteUbungDatum $sortOrder, Created $sortOrder LIMIT $dynamicLimit) AS subset ORDER BY RAND() LIMIT 1");
+    $stmt->execute($params);
+    $word = $stmt->fetch(PDO::FETCH_ASSOC);
+    $notice = '';
+
+    if (!$word) {
+        $fallback = userQuery($pdo, "SELECT * FROM (SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ?" . $extraWhere . " ORDER BY NachsteUbungDatum ASC, Created ASC LIMIT 1000) AS subset ORDER BY RAND() LIMIT 1", [$uid]);
+        $word = $fallback->fetch(PDO::FETCH_ASSOC);
+        $notice = "Keine Wörter gefunden, die den genauen Filtern entsprechen. Stattdessen wird ein zufälliges Wort aus der Warteschlange angezeigt.";
+    }
+
+    if ($word) {
+        normalizeVerbFlag($word);
+    }
+
+    return [$word ?: null, $notice];
+}
+
 // --- API / AJAX BACKEND CONTROLLER ---
 if (isset($_GET['api'])) {
     $action = $_GET['api'] ?? '';
@@ -715,114 +753,24 @@ if (isset($_GET['api'])) {
         exit;
     }
 
-    if ($action === 'ai_story_game_next' || $action === 'ai_story_writer_next') {
-        $input = jsonInput();
-        [$where, $params] = buildGameFilter($input);
-        array_unshift($params, $uid);
-
-        $stmt = $pdo->prepare("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ?" . $where . " ORDER BY RAND() LIMIT 5");
-        $stmt->execute($params);
-        $chosenWords = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        if (count($chosenWords) < 5) {
-            $needed = 5 - count($chosenWords);
-            $fallbackStmt = $pdo->prepare("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ? ORDER BY RAND() LIMIT ?");
-            $fallbackStmt->execute([$uid, $needed]);
-            $chosenWords = array_merge($chosenWords, $fallbackStmt->fetchAll(PDO::FETCH_ASSOC));
-        }
-
-        if (empty($chosenWords)) {
-            echo json_encode(['success' => false, 'error' => 'Keine passenden Wörter gefunden.']);
-            exit;
-        }
-
-        foreach ($chosenWords as &$cw) {
-            normalizeVerbFlag($cw);
-        }
-        unset($cw);
-
-        if ($action === 'ai_story_writer_next') {
-            echo json_encode(['success' => true, 'words' => $chosenWords]);
-            exit;
-        }
-
-        $wordsListStr = implode(', ', array_column($chosenWords, 'Wort'));
-        $ai = callDeepSeek("Schreibe eine kurze Geschichte auf Deutsch (maximal 300 Wörter), die unbedingt die folgenden 5 Wörter enthält: $wordsListStr. Verwende diese Wörter natürlich im Kontext.");
-        if (!$ai['ok']) {
-            echo json_encode(['success' => false, 'error' => $ai['error']]);
-            exit;
-        }
-
-        echo json_encode([
-            'success' => true,
-            'story' => $ai['content'] !== '' ? $ai['content'] : "Es konnte keine Geschichte generiert werden.",
-            'words' => $chosenWords
-        ]);
-        exit;
-    }
-
-    if ($action === 'ai_story_writer_check') {
-        $input = jsonInput();
-        $userStory = trim($input['story'] ?? '');
-        $words = $input['words'] ?? [];
-
-        if (empty($userStory)) {
-            echo json_encode(['success' => false, 'error' => 'Die Geschichte darf nicht leer sein.']);
-            exit;
-        }
-
-        $wordTokens = [];
-        foreach ((array)$words as $w) {
-            if (is_array($w) && isset($w['Wort'])) {
-                $wordTokens[] = $w['Wort'];
-            } elseif (is_string($w)) {
-                $wordTokens[] = $w;
-            }
-        }
-        $wordsListStr = implode(', ', $wordTokens);
-
-        $userPrompt = "Der Benutzer hat eine eigene Geschichte auf Deutsch geschrieben und musste dabei folgende 5 Wörter verwenden: $wordsListStr.\n\n" .
-                    "Hier ist die Geschichte des Benutzers:\n\"$userStory\"\n\n" .
-                    "Überprüfe bitte:\n" .
-                    "1. Ob alle 5 Wörter korrekt verwendet wurden.\n" .
-                    "2. Korrigiere eventuelle Grammatik- oder Rechtschreibfehler in der Geschichte.\n" .
-                    "3. Gib eine kurze, konstruktive Rückmeldung auf Deutsch.";
-
-        $ai = callDeepSeek($userPrompt);
-        if (!$ai['ok']) {
-            echo json_encode(['success' => false, 'error' => $ai['error']]);
-            exit;
-        }
-
-        echo json_encode([
-            'success' => true,
-            'correction' => $ai['content'] !== '' ? $ai['content'] : "Es konnte keine Korrektur generiert werden."
-        ]);
-        exit;
-    }
-
     if ($action === 'der_die_das_next') {
-        $stmt = userQuery($pdo, "SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ? AND Status = 'aktiva' AND Artikel IN ('der', 'die', 'das') ORDER BY RAND() LIMIT 1", [$uid]);
-        $word = $stmt->fetch(PDO::FETCH_ASSOC);
+        [$word, $notice] = pickGameWord($pdo, $uid, jsonInput(), " AND Artikel IN ('der', 'die', 'das')");
 
         if ($word) {
-            normalizeVerbFlag($word);
-            echo json_encode(['success' => true, 'word' => $word]);
+            echo json_encode(['success' => true, 'word' => $word, 'notice' => $notice]);
         } else {
-            echo json_encode(['success' => false, 'error' => 'Keine passenden aktiva Wörter mit Artikel (der, die, das) gefunden.']);
+            echo json_encode(['success' => false, 'error' => 'Keine Wörter mit Artikel (der, die, das) gefunden.']);
         }
         exit;
     }
 
     if ($action === 'deutsch_meister_next') {
-        $stmt = userQuery($pdo, "SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ? AND Status = 'aktiva' ORDER BY RAND() LIMIT 1", [$uid]);
-        $word = $stmt->fetch(PDO::FETCH_ASSOC);
+        [$word, $notice] = pickGameWord($pdo, $uid, jsonInput());
 
         if ($word) {
-            normalizeVerbFlag($word);
-            echo json_encode(['success' => true, 'word' => $word]);
+            echo json_encode(['success' => true, 'word' => $word, 'notice' => $notice]);
         } else {
-            echo json_encode(['success' => false, 'error' => 'Keine passenden aktiva Wörter gefunden.']);
+            echo json_encode(['success' => false, 'error' => 'Keine Wörter gefunden.']);
         }
         exit;
     }
@@ -866,8 +814,16 @@ if (isset($_GET['api'])) {
             $feedback = $ai['content'];
         }
 
+        $stmt = $pdo->prepare("SELECT Score, Status FROM meine_wortschatz WHERE Wort = ? AND user_id = ?");
+        $stmt->execute([$word, $uid]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $isAktiva = $row && statusFromScore((int)$row['Score']) === 'aktiva';
+
         $points = 0;
-        if ($evalResult === 'ok') {
+        if (!$isAktiva) {
+            // Words that are not aktiva yet: +1 for a correct sentence, nothing otherwise
+            $points = ($evalResult === 'ok') ? 1 : 0;
+        } elseif ($evalResult === 'ok') {
             $letterCount = mb_strlen($sentence);
             if ($letterCount <= 21) {
                 $points = 9;
@@ -880,12 +836,9 @@ if (isset($_GET['api'])) {
             $points = 1;
         }
 
-        $stmt = $pdo->prepare("SELECT Score, Status FROM meine_wortschatz WHERE Wort = ? AND user_id = ?");
-        $stmt->execute([$word, $uid]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-
         if ($row) {
-            $newScore = applyScorePoints((int)$row['Score'], $points);
+            $currentScore = (int)$row['Score'];
+            $newScore = $points === 0 ? $currentScore : applyScorePoints($currentScore, $points);
             saveWordScore($pdo, $uid, $word, $newScore);
         }
 
@@ -927,20 +880,26 @@ if (isset($_GET['api'])) {
         $currentScore = (int)$row['Score'];
         $isCorrect = ($guessedArtikel === $correctArtikel);
 
+        $isAktiva = (statusFromScore($currentScore) === 'aktiva');
         $superBoosterTriggered = false;
 
         if ($isCorrect) {
             $currentStreak++;
-            if ($currentStreak % 10 === 0) {
+            if (!$isAktiva) {
+                // Words that are not aktiva yet: +1 for a correct answer
+                $points = 1;
+            } elseif ($currentStreak % 10 === 0) {
                 $superBoosterTriggered = true;
-                $newScore = applyScorePoints($currentScore, 9);
+                $points = 9;
             } else {
-                $newScore = applyScorePoints($currentScore, 3);
+                $points = 3;
             }
         } else {
             $currentStreak = 0;
-            $newScore = applyScorePoints($currentScore, -1);
+            // Words that are not aktiva yet lose nothing on a wrong answer
+            $points = $isAktiva ? -1 : 0;
         }
+        $newScore = $points === 0 ? $currentScore : applyScorePoints($currentScore, $points);
 
         $newStatus = saveWordScore($pdo, $uid, $wort, $newScore);
 
@@ -948,6 +907,7 @@ if (isset($_GET['api'])) {
             'success' => true,
             'is_correct' => $isCorrect,
             'correct_artikel' => $correctArtikel,
+            'points' => $points,
             'new_score' => $newScore,
             'new_status' => $newStatus,
             'new_streak' => $currentStreak,
@@ -1008,7 +968,10 @@ if (isset($_GET['api'])) {
             $currentScore = (int)$row['Score'];
             $isAktiva = (statusFromScore($currentScore) === 'aktiva');
 
-            if ($isGrammaticallyCorrect && $isIdiomaticallyCorrect && $isAktiva) {
+            if ($action === 'der_die_das_check_sentence' && !$isAktiva) {
+                // Words that are not aktiva yet: +1 for a correct sentence, nothing otherwise
+                $pointsToAdd = $isGrammaticallyCorrect ? 1 : 0;
+            } elseif ($isGrammaticallyCorrect && $isIdiomaticallyCorrect && $isAktiva) {
                 if ($action === 'check_sentence_booster') {
                     $pointsToAdd = 9;
                 } else {
@@ -1018,7 +981,7 @@ if (isset($_GET['api'])) {
                 $pointsToAdd = 1;
             }
 
-            $newScore = applyScorePoints($currentScore, $pointsToAdd);
+            $newScore = $pointsToAdd === 0 ? $currentScore : applyScorePoints($currentScore, $pointsToAdd);
             saveWordScore($pdo, $uid, $word, $newScore);
         }
 
@@ -1034,50 +997,6 @@ if (isset($_GET['api'])) {
 
     if ($action === 'game_next') {
         $input = jsonInput();
-        $mode = $input['mode'] ?? 'standard';
-        $selectedStatuses = $input['statuses'] ?? [];
-        $sortOrder = ($input['sort_order'] ?? 'ASC') === 'DESC' ? 'DESC' : 'ASC';
-
-        if ($mode === 'quiz') {
-            $statusClause = " AND Übersetzung IS NOT NULL AND Übersetzung != ''";
-            $statusParams = [];
-            if (!empty($selectedStatuses)) {
-                $placeholders = implode(',', array_fill(0, count($selectedStatuses), '?'));
-                $statusClause .= " AND Status IN ($placeholders)";
-                $statusParams = $selectedStatuses;
-            }
-
-            $stmt = $pdo->prepare("SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ?" . $statusClause . " ORDER BY NachsteUbungDatum $sortOrder, Created $sortOrder LIMIT 500");
-            $stmt->execute(array_merge([$uid], $statusParams));
-            $candidates = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-            if (empty($candidates)) {
-                $fallback = userQuery($pdo, "SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ? AND Übersetzung IS NOT NULL AND Übersetzung != '' ORDER BY RAND() LIMIT 1", [$uid]);
-                $targetWord = $fallback->fetch(PDO::FETCH_ASSOC);
-            } else {
-                $targetWord = $candidates[array_rand($candidates)];
-            }
-
-            if ($targetWord) {
-                normalizeVerbFlag($targetWord);
-                $wrongStmt = $pdo->prepare("SELECT DISTINCT Übersetzung FROM meine_wortschatz WHERE user_id = ? AND Übersetzung IS NOT NULL AND Übersetzung != '' AND Übersetzung != ? ORDER BY RAND() LIMIT 3");
-                $wrongStmt->execute([$uid, $targetWord['Übersetzung']]);
-                $wrongTrans = $wrongStmt->fetchAll(PDO::FETCH_COLUMN);
-
-                $options = array_merge([$targetWord['Übersetzung']], $wrongTrans);
-                shuffle($options);
-
-                echo json_encode([
-                    'mode' => 'quiz',
-                    'word' => $targetWord,
-                    'options' => $options,
-                    'correct_translation' => $targetWord['Übersetzung']
-                ]);
-                exit;
-            } else {
-                $mode = 'standard';
-            }
-        }
 
         $specificWord = trim($input['specific_word'] ?? '');
 
@@ -1101,38 +1020,7 @@ if (isset($_GET['api'])) {
             exit;
         }
 
-        [$filterWhere, $params] = buildGameFilter($input, true);
-        array_unshift($params, $uid);
-        $query = "SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ?" . $filterWhere;
-
-        $hasFilters = !empty($input['statuses']) || !empty($input['sharepoint_lists']) || !empty($input['themen']) || !empty($input['categories']);
-
-        if ($hasFilters) {
-            $countStmt = $pdo->prepare("SELECT COUNT(*) FROM meine_wortschatz WHERE user_id = ?" . $filterWhere);
-            $countStmt->execute($params);
-            $totalMatches = (int)$countStmt->fetchColumn();
-
-            $dynamicLimit = max(1, (int)floor($totalMatches / 2));
-        } else {
-            $dynamicLimit = 1000;
-        }
-
-        $wrappedQuery = "SELECT * FROM ($query ORDER BY NachsteUbungDatum $sortOrder, Created $sortOrder LIMIT $dynamicLimit) AS subset ORDER BY RAND() LIMIT 1";
-
-        $stmt = $pdo->prepare($wrappedQuery);
-        $stmt->execute($params);
-        $word = $stmt->fetch(PDO::FETCH_ASSOC);
-        $notice = '';
-
-        if (!$word) {
-            $fallback = userQuery($pdo, "SELECT * FROM (SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ? ORDER BY NachsteUbungDatum ASC, Created ASC LIMIT 1000) AS subset ORDER BY RAND() LIMIT 1", [$uid]);
-            $word = $fallback->fetch(PDO::FETCH_ASSOC);
-            $notice = "Keine Wörter gefunden, die den genauen Filtern entsprechen. Stattdessen wird ein zufälliges Wort aus der Warteschlange angezeigt.";
-        }
-
-        if ($word) {
-            normalizeVerbFlag($word);
-        }
+        [$word, $notice] = pickGameWord($pdo, $uid, $input);
 
         echo json_encode(['mode' => 'standard', 'word' => $word, 'notice' => $notice]);
         exit;
@@ -1155,47 +1043,6 @@ if (isset($_GET['api'])) {
             }
         }
         echo json_encode(['success' => true]);
-        exit;
-    }
-
-    if ($action === 'suggest_sentence') {
-        $input = jsonInput();
-        $word = trim($input['word'] ?? '');
-
-        if (empty($word)) {
-            echo json_encode(['success' => false, 'error' => 'Das Wort darf nicht leer sein.']);
-            exit;
-        }
-
-        $ai = callDeepSeek("Schreibe einen natürlichen Beispielsatz auf Deutsch für das Wort '$word' und erkläre kurz die Bedeutung auf Deutsch.");
-        if (!$ai['ok']) {
-            echo json_encode(['success' => false, 'error' => $ai['error']]);
-            exit;
-        }
-
-        echo json_encode(['success' => true, 'suggestion' => $ai['content']]);
-        exit;
-    }
-
-    if ($action === 'check_sentence') {
-        $input = jsonInput();
-        $sentence = trim($input['sentence'] ?? '');
-        $word = trim($input['word'] ?? '');
-
-        if (empty($sentence)) {
-            echo json_encode(['success' => false, 'error' => 'Der Satz darf nicht leer sein.']);
-            exit;
-        }
-
-        $ai = callDeepSeek("Überprüfe, ob das Wort '$word' im folgenden Satz korrekt und natürlich verwendet wurde. " .
-                    "Korrigiere den Satz falls nötig und erkläre kurz die Bedeutung von '$word' im Kontext: " .
-                    "'$sentence'");
-        if (!$ai['ok']) {
-            echo json_encode(['success' => false, 'error' => $ai['error']]);
-            exit;
-        }
-
-        echo json_encode(['success' => true, 'correction' => $ai['content']]);
         exit;
     }
 
@@ -1547,12 +1394,8 @@ try {
             -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M9 3Q9.9 11.1 17 12Q9.9 12.9 9 21Q8.1 12.9 1 12Q8.1 11.1 9 3ZM19 1.5Q19.4 4.6 22.5 5Q19.4 5.4 19 8.5Q18.6 5.4 15.5 5Q18.6 4.6 19 1.5ZM19 16Q19.35 18.65 22 19Q19.35 19.35 19 22Q18.65 19.35 16 19Q18.65 18.65 19 16Z'/%3E%3C/svg%3E") center / contain no-repeat;
             mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M9 3Q9.9 11.1 17 12Q9.9 12.9 9 21Q8.1 12.9 1 12Q8.1 11.1 9 3ZM19 1.5Q19.4 4.6 22.5 5Q19.4 5.4 19 8.5Q18.6 5.4 15.5 5Q18.6 4.6 19 1.5ZM19 16Q19.35 18.65 22 19Q19.35 19.35 19 22Q18.65 19.35 16 19Q18.65 18.65 19 16Z'/%3E%3C/svg%3E") center / contain no-repeat;
         }
-        /* "Mit KI trainieren" Dropdown im Standard-Training */
+        /* "Mit KI trainieren" im Standard-Training */
         .ai-train-menu { margin-top: 1rem; border-top: 1px solid var(--md-border); padding-top: 12px; }
-        .ai-train-summary { list-style: none; width: 100%; display: flex; align-items: center; justify-content: center; cursor: pointer; user-select: none; }
-        .ai-train-summary::-webkit-details-marker { display: none; }
-        .ai-train-summary::after { content: '▼'; font-size: 0.7rem; margin-left: 0.5em; transition: transform 0.2s; }
-        .ai-train-menu[open] > .ai-train-summary::after { transform: rotate(180deg); }
         .edit-image-container { margin-top: 12px; text-align: center; }
         .edit-image-container img {
             max-width: 100%; max-height: 240px; border-radius: 8px; cursor: zoom-in;
@@ -1820,87 +1663,6 @@ try {
             .game-rate-group .rate-btn .rate-icon { font-size: 1.45rem; }
         }
 
-        .quiz-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 16px;
-            margin: 1.5rem 0;
-        }
-        .quiz-card {
-            background: var(--md-surface-card);
-            border: 2px solid var(--md-border);
-            border-radius: 12px;
-            padding: 20px;
-            text-align: center;
-            cursor: pointer;
-            font-size: 1.1rem;
-            font-weight: 500;
-            transition: all 0.2s ease;
-        }
-        .quiz-card:hover {
-            border-color: var(--md-primary);
-            transform: translateY(-2px);
-        }
-        .quiz-card.correct {
-            background-color: rgba(38, 166, 154, 0.2);
-            border-color: var(--md-success);
-        }
-        .quiz-card.wrong {
-            background-color: rgba(229, 57, 53, 0.2);
-            border-color: var(--md-danger);
-        }
-
-        .timer-bar-container {
-            width: 100%;
-            background: var(--md-track);
-            height: 10px;
-            border-radius: 5px;
-            overflow: hidden;
-            margin-bottom: 1rem;
-            box-shadow: inset 0 1px 3px rgba(0,0,0,0.25);
-        }
-        .timer-bar-fill {
-            background: var(--md-success);
-            height: 100%;
-            width: 100%;
-            transition: width 0.1s linear, background-color 0.3s ease;
-        }
-
-        .story-box {
-            background: var(--md-surface-card);
-            border: 1px solid var(--md-border);
-            border-radius: 10px;
-            padding: 20px;
-            font-size: 1.05rem;
-            line-height: 1.6;
-            margin-bottom: 1.5rem;
-            color: var(--md-on-surface);
-        }
-
-        .word-rating-item {
-            background: var(--md-surface-card);
-            border: 1px solid var(--md-border);
-            border-radius: 8px;
-            padding: 16px;
-            margin-bottom: 12px;
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            transition: opacity 0.3s ease;
-        }
-        .word-rating-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 8px;
-        }
-        .word-rating-buttons {
-            display: flex;
-            gap: 5px;
-            flex-wrap: wrap;
-        }
-
         .modal-overlay {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 1000;
@@ -2094,7 +1856,6 @@ try {
             .rate-btn .rate-icon { font-size: 1.25rem; }
             .action-group:not(.is-inline) .rate-btn { font-size: 0.7rem; }
             .chart-wrapper { height: 260px; }
-            .quiz-grid { grid-template-columns: 1fr; }
         }
         @media (max-width: 440px) {
             .rate-btn { font-size: 0.55rem; letter-spacing: -0.02em; }
@@ -2540,9 +2301,6 @@ try {
                         <option value="standard">Standard Vokabeltrainer</option>
                         <option value="der_die_das">Der-Die-Das Training</option>
                         <option value="deutsch_meister">Deutsch Meister</option>
-                        <option value="ai_story">KI-Geschichte (lesen)</option>
-                        <option value="ai_story_writer">KI-Geschichtentraining (selbst schreiben)</option>
-                        <option value="quiz">Multiple-Choice Übersetzung Quiz</option>
                     </select>
 
                     <!-- Status Selection moved right under game selection with Modern Pill UI -->
@@ -2651,45 +2409,30 @@ try {
 
                         <p><strong>Synonym:</strong> <span id="gSyn" style="color: var(--md-accent-text); font-size: 1.0rem;"></span></p>
                         <p><strong>Thema:</strong> <span id="gThema"></span></p>
-                        <p><strong>Artikel:</strong> <span id="gArt"></span></p>
-                        <p><strong>Plural:</strong> <span id="gPlural"></span></p>
-                        <p><strong>Grundverb:</strong> <span id="gGrundverb"></span></p>
-                        <p><strong>Präfix:</strong> <span id="gPraefix"></span></p>
-                        <p><strong>Präpositionalkollokation:</strong> <span id="gPraeposition"></span></p>
+                        <p id="gArtRow"><strong>Artikel:</strong> <span id="gArt"></span></p>
+                        <p id="gPluralRow"><strong>Plural:</strong> <span id="gPlural"></span></p>
+                        <p id="gGrundverbRow"><strong>Grundverb:</strong> <span id="gGrundverb"></span></p>
+                        <p id="gPraefixRow"><strong>Präfix:</strong> <span id="gPraefix"></span></p>
+                        <p id="gPraepositionRow"><strong>Präpositionalkollokation:</strong> <span id="gPraeposition"></span></p>
                         <p><strong>Wortart:</strong> <span id="gWart"></span></p>
                         <p><strong>Ist Verb?:</strong> <span id="gIsVerb"></span></p>
                         <p><strong>Beispiel:</strong> <em id="gEx"></em></p>
                         <p id="gDates" style="font-size: 0.8rem; color: var(--md-text-muted); margin-top: 10px;"></p>
                     </div>
 
-                    <details class="ai-train-menu" id="aiTrainDetails">
-                    <summary class="btn btn-info ai-btn ai-train-summary">Mit KI trainieren</summary>
-                    <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 12px;">
-                        <div>
-                            <button type="button" class="btn btn-info" onclick="suggestSentenceWithAI()" id="suggestSentenceBtn" style="width: 100%; margin-bottom: 8px;">💡 Satz vorschlagen</button>
-                            <div id="aiSuggestionResult" style="display: none; background: var(--md-surface); border: 1px solid var(--md-border); padding: 12px; border-radius: 8px; font-size: 0.95rem; width: 100%;">
-                                <strong>Vorschlag:</strong> <div id="aiSuggestionText" style="color: var(--md-accent-text); margin-top: 4px; white-space: pre-wrap;"></div>
-                            </div>
+                    <div class="ai-train-menu">
+                        <button type="button" class="btn btn-info ai-btn" onclick="toggleSentenceWriter()" id="toggleSentenceWriterBtn" style="width: 100%;">Mit KI trainieren</button>
+
+                        <div id="sentenceWriterContainer" style="display: none; margin-top: 10px;">
+                            <label for="userSentenceInput" style="font-size: 0.9rem; font-weight: 500; margin-bottom: 6px;">Schreibe einen Satz mit diesem Wort:</label>
+                            <textarea id="userSentenceInput" rows="2" placeholder="z.B. Ich benutze dieses Wort..." style="width: 100%; max-width: 100%; margin-bottom: 8px; resize: vertical;"></textarea>
+                            <button type="button" class="btn btn-success" onclick="checkStandardSentenceBooster()" style="width: 100%;">Satz prüfen & Booster holen 🚀</button>
                         </div>
 
-                        <div>
-                            <button type="button" class="btn btn-secondary" onclick="toggleSentenceWriter()" id="toggleSentenceWriterBtn" style="width: 100%; margin-bottom: 8px;">✍️ Satz schreiben</button>
-
-                            <div id="sentenceWriterContainer" style="display: none; margin-top: 8px;">
-                                <label for="userSentenceInput" style="font-size: 0.9rem; font-weight: 500; margin-bottom: 6px;">Schreibe einen Satz mit diesem Wort:</label>
-                                <textarea id="userSentenceInput" rows="2" placeholder="z.B. Ich benutze dieses Wort..." style="width: 100%; max-width: 100%; margin-bottom: 8px; resize: vertical;"></textarea>
-                                <div style="display: flex; gap: 8px;">
-                                    <button type="button" class="btn btn-secondary" onclick="checkSentenceWithAI()" id="checkSentenceBtn" style="flex: 1;">Normal prüfen</button>
-                                    <button type="button" class="btn btn-success" onclick="checkStandardSentenceBooster()" style="flex: 1;">Satz prüfen & Booster holen 🚀</button>
-                                </div>
-                            </div>
-
-                            <div id="aiCorrectionResult" style="display: none; background: var(--md-surface); border: 1px solid var(--md-border); padding: 12px; border-radius: 8px; font-size: 0.95rem; width: 100%; margin-top: 8px;">
-                                <strong>Korrektur:</strong> <div id="aiCorrectionText" style="color: var(--md-text-success); margin-top: 4px; white-space: pre-wrap;"></div>
-                            </div>
+                        <div id="aiCorrectionResult" style="display: none; background: var(--md-surface); border: 1px solid var(--md-border); padding: 12px; border-radius: 8px; font-size: 0.95rem; width: 100%; margin-top: 8px;">
+                            <strong>Korrektur:</strong> <div id="aiCorrectionText" style="color: var(--md-text-success); margin-top: 4px; white-space: pre-wrap;"></div>
                         </div>
                     </div>
-                    </details>
 
                     <div class="rate-group game-rate-group" role="group" aria-label="Kenntnisse bewerten">
                         <button type="button" class="rate-btn r-direkt-aktiv" id="directPromoteContainer" onclick="directPromoteCurrentWord()" title="Direkt aktiv (Score 10)"><span class="rate-icon" aria-hidden="true">🚀</span><span>direkt aktiv</span></button>
@@ -2789,73 +2532,6 @@ try {
                 </div>
             </div>
 
-            <div id="aiStoryPlayCard" style="display: none;">
-                <div class="card">
-                    <h2 style="text-align: center; margin-bottom: 1rem;">📖 KI-Geschichte (Deepseek)</h2>
-                    <div id="aiStoryDisplay" class="story-box"></div>
-
-                    <h3 style="margin-top: 1.5rem; margin-bottom: 1.0rem;" id="ratingHeaderTitle">Wörter bewerten:</h3>
-                    <div id="wordsRatingContainer"></div>
-
-                    <div style="text-align: center; margin-top: 1.5rem; border-top: 1px solid var(--md-border); padding-top: 1rem; display: flex; gap: 10px; flex-wrap: wrap;">
-                        <button type="button" onclick="loadNewStory()" class="btn btn-success" style="flex: 1; min-width: 200px;">Nächste Geschichte generieren 🔄</button>
-                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Trainingseinstellungen ändern</button>
-                    </div>
-                </div>
-            </div>
-
-            <div id="aiStoryWriterPlayCard" style="display: none;">
-                <div class="card">
-                    <h2 style="text-align: center; margin-bottom: 0.5rem;">✍️ KI-Geschichtentraining (Selbst schreiben)</h2>
-                    <p style="text-align: center; color: var(--md-text-muted); font-size: 0.9rem; margin-bottom: 1.5rem;">Schreibe eine Geschichte, die alle 5 vorgegebenen Wörter enthält, und lasse sie von der KI korrigieren!</p>
-
-                    <div style="margin-bottom: 1rem;">
-                        <label style="font-weight: 600; margin-bottom: 8px; display: block;">Verwende diese 5 Wörter in deiner Geschichte:</label>
-                        <div id="writerWordsList" style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 1rem;"></div>
-                    </div>
-
-                    <div style="margin-bottom: 1rem;">
-                        <label for="userStoryInput" style="font-weight: 600; margin-bottom: 6px; display: block;">Deine Geschichte:</label>
-                        <textarea id="userStoryInput" rows="6" placeholder="Schreibe deine Geschichte hier..." style="width: 100%; max-width: 100%; resize: vertical; padding: 12px; font-size: 1rem;"></textarea>
-                    </div>
-
-                    <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 1.5rem;">
-                        <button type="button" onclick="checkUserStoryWithAI()" class="btn btn-success ai-btn" id="checkStoryBtn" style="flex: 1; min-width: 150px;">Geschichte korrigieren</button>
-                        <button type="button" onclick="loadNewStoryWriter()" class="btn btn-secondary" style="flex: 1; min-width: 150px;">🔄 Neue Wörter laden</button>
-                    </div>
-
-                    <div id="storyCorrectionResult" style="display: none; background: var(--md-surface); border: 1px solid var(--md-border); padding: 16px; border-radius: 8px; font-size: 0.95rem; margin-bottom: 1.5rem;">
-                        <strong style="color: var(--md-accent-text); display: block; margin-bottom: 8px;">KI-Korrektur & Feedback:</strong>
-                        <div id="storyCorrectionText" style="color: var(--md-on-surface); white-space: pre-wrap; line-height: 1.5;"></div>
-                    </div>
-
-                    <div style="text-align: center; border-top: 1px solid var(--md-border); padding-top: 1rem; margin-top: 1.5rem;">
-                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Trainingseinstellungen ändern</button>
-                    </div>
-                </div>
-            </div>
-
-            <div id="quizPlayCard" style="display: none;">
-                <div class="card">
-                    <h2 style="text-align: center;">🎯 Blitz-Übersetzungs-Quiz</h2>
-                    <p style="text-align: center; color: var(--md-text-muted); font-size: 0.9rem; margin-bottom: 0.5rem;">Schnell! Wähle die korrekte Übersetzung aus!</p>
-
-                    <div class="timer-bar-container">
-                        <div class="timer-bar-fill" id="quizTimerFill"></div>
-                    </div>
-
-                    <div style="text-align: center; margin-top: 15px;">
-                        <span style="font-size: 0.8rem; text-transform: uppercase; color: var(--md-text-muted); letter-spacing: 1px;">Gesuchtes Wort:</span>
-                        <div id="quizWordDisplay" class="word-display"></div>
-                    </div>
-
-                    <div class="quiz-grid" id="quizGrid"></div>
-
-                    <div style="text-align: center; margin-top: 1.5rem; border-top: 1px solid var(--md-border); padding-top: 1rem;">
-                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Trainingseinstellungen ändern</button>
-                    </div>
-                </div>
-            </div>
         </div>
     </div>
 
@@ -2944,19 +2620,11 @@ let transSearchTimeout = null;
 
 let activeGameSettings = null;
 let currentGameWord = null;
-let currentQuizData = null;
-let currentStoryData = null;
-let currentWriterData = null;
 let currentDerDieDasWord = null;
 let currentDeutschMeisterWord = null;
 let lastDddWasRight = false;
 let dddStreakCount = 0;
 let statusPieChartInstance = null;
-
-let quizTimerInterval = null;
-let quizTimeLeft = 45;
-let quizStartTime = 0;
-const quizTotalTime = 45;
 
 let masterWordsList = <?= jsonForScript($initialWords) ?>;
 let cachedLists = <?= jsonForScript($initialLists) ?>;
@@ -3518,7 +3186,6 @@ function updateDailyTrackerUI() {
 }
 
 function switchView(viewName) {
-    if (quizTimerInterval) clearInterval(quizTimerInterval);
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
     if (viewName === 'dashboard') {
         document.getElementById('dashboard-view').classList.add('active');
@@ -3764,32 +3431,8 @@ function initGameInstantly() {
         showGameSetup();
     } else {
         document.getElementById('gameSetupCard').style.display = 'none';
-        if (activeGameSettings.mode === 'ai_story') {
+        if (activeGameSettings.mode === 'der_die_das') {
             document.getElementById('gamePlayCard').style.display = 'none';
-            document.getElementById('derDieDasPlayCard').style.display = 'none';
-            document.getElementById('deutschMeisterPlayCard').style.display = 'none';
-            document.getElementById('quizPlayCard').style.display = 'none';
-            document.getElementById('aiStoryWriterPlayCard').style.display = 'none';
-            document.getElementById('aiStoryPlayCard').style.display = 'block';
-        } else if (activeGameSettings.mode === 'ai_story_writer') {
-            document.getElementById('gamePlayCard').style.display = 'none';
-            document.getElementById('derDieDasPlayCard').style.display = 'none';
-            document.getElementById('deutschMeisterPlayCard').style.display = 'none';
-            document.getElementById('quizPlayCard').style.display = 'none';
-            document.getElementById('aiStoryPlayCard').style.display = 'none';
-            document.getElementById('aiStoryWriterPlayCard').style.display = 'block';
-        } else if (activeGameSettings.mode === 'quiz') {
-            document.getElementById('gamePlayCard').style.display = 'none';
-            document.getElementById('derDieDasPlayCard').style.display = 'none';
-            document.getElementById('deutschMeisterPlayCard').style.display = 'none';
-            document.getElementById('aiStoryPlayCard').style.display = 'none';
-            document.getElementById('aiStoryWriterPlayCard').style.display = 'none';
-            document.getElementById('quizPlayCard').style.display = 'block';
-        } else if (activeGameSettings.mode === 'der_die_das') {
-            document.getElementById('gamePlayCard').style.display = 'none';
-            document.getElementById('aiStoryPlayCard').style.display = 'none';
-            document.getElementById('aiStoryWriterPlayCard').style.display = 'none';
-            document.getElementById('quizPlayCard').style.display = 'none';
             document.getElementById('deutschMeisterPlayCard').style.display = 'none';
             document.getElementById('derDieDasPlayCard').style.display = 'block';
 
@@ -3798,15 +3441,9 @@ function initGameInstantly() {
         } else if (activeGameSettings.mode === 'deutsch_meister') {
             document.getElementById('gamePlayCard').style.display = 'none';
             document.getElementById('derDieDasPlayCard').style.display = 'none';
-            document.getElementById('aiStoryPlayCard').style.display = 'none';
-            document.getElementById('aiStoryWriterPlayCard').style.display = 'none';
-            document.getElementById('quizPlayCard').style.display = 'none';
             document.getElementById('deutschMeisterPlayCard').style.display = 'block';
             fetchNextDeutschMeisterWord();
         } else {
-            document.getElementById('aiStoryPlayCard').style.display = 'none';
-            document.getElementById('aiStoryWriterPlayCard').style.display = 'none';
-            document.getElementById('quizPlayCard').style.display = 'none';
             document.getElementById('derDieDasPlayCard').style.display = 'none';
             document.getElementById('deutschMeisterPlayCard').style.display = 'none';
             document.getElementById('gamePlayCard').style.display = 'block';
@@ -3815,23 +3452,14 @@ function initGameInstantly() {
 }
 
 function onGameModeChange() {
-    const mode = document.getElementById('gameModeSelect').value;
     const stdOptions = document.getElementById('standardGameOptions');
     const statusGroup = document.getElementById('statusSelectionGroup');
     const statusLabel = document.getElementById('statusLabelText');
 
-    if (mode === 'ai_story' || mode === 'ai_story_writer') {
-        stdOptions.style.display = 'block';
-        statusGroup.style.display = 'block';
-        statusLabel.textContent = 'Status für KI-Training auswählen';
-    } else if (mode === 'quiz' || mode === 'standard') {
-        stdOptions.style.display = (mode === 'standard') ? 'block' : 'none';
-        statusGroup.style.display = 'block';
-        statusLabel.textContent = 'Status zum Wiederholen auswählen';
-    } else if (mode === 'der_die_das' || mode === 'deutsch_meister') {
-        stdOptions.style.display = 'none';
-        statusGroup.style.display = 'none';
-    }
+    // All modes share the same settings; Der-Die-Das only plays words with der/die/das (filtered on the server)
+    stdOptions.style.display = 'block';
+    statusGroup.style.display = 'block';
+    statusLabel.textContent = 'Status zum Wiederholen auswählen';
 }
 
 function updateGameCategoriesCheckboxes() {
@@ -3859,15 +3487,11 @@ function onGameThemaChange() {
 }
 
 function showGameSetup() {
-    if (quizTimerInterval) clearInterval(quizTimerInterval);
     activeGameSettings = null;
     document.getElementById('gameSetupCard').style.display = 'block';
     document.getElementById('gamePlayCard').style.display = 'none';
     document.getElementById('derDieDasPlayCard').style.display = 'none';
     document.getElementById('deutschMeisterPlayCard').style.display = 'none';
-    document.getElementById('aiStoryPlayCard').style.display = 'none';
-    document.getElementById('aiStoryWriterPlayCard').style.display = 'none';
-    document.getElementById('quizPlayCard').style.display = 'none';
 }
 
 function startGameSession(e) {
@@ -3882,90 +3506,36 @@ function startGameSession(e) {
         themenList = [selectedThema];
     }
 
-    if (mode === 'ai_story') {
-        activeGameSettings = {
-            mode: 'ai_story',
-            statuses: formData.getAll('game_statuses[]'),
-            sharepoint_lists: formData.getAll('sharepoint_lists[]'),
-            themen: themenList,
-            categories: formData.getAll('categories[]')
-        };
-        document.getElementById('gameSetupCard').style.display = 'none';
-        document.getElementById('gamePlayCard').style.display = 'none';
-        document.getElementById('derDieDasPlayCard').style.display = 'none';
-        document.getElementById('deutschMeisterPlayCard').style.display = 'none';
-        document.getElementById('quizPlayCard').style.display = 'none';
-        document.getElementById('aiStoryWriterPlayCard').style.display = 'none';
-        document.getElementById('aiStoryPlayCard').style.display = 'block';
-        fetchNewStory();
-    } else if (mode === 'ai_story_writer') {
-        activeGameSettings = {
-            mode: 'ai_story_writer',
-            statuses: formData.getAll('game_statuses[]'),
-            sharepoint_lists: formData.getAll('sharepoint_lists[]'),
-            themen: themenList,
-            categories: formData.getAll('categories[]')
-        };
-        document.getElementById('gameSetupCard').style.display = 'none';
-        document.getElementById('gamePlayCard').style.display = 'none';
-        document.getElementById('derDieDasPlayCard').style.display = 'none';
-        document.getElementById('deutschMeisterPlayCard').style.display = 'none';
-        document.getElementById('quizPlayCard').style.display = 'none';
-        document.getElementById('aiStoryPlayCard').style.display = 'none';
-        document.getElementById('aiStoryWriterPlayCard').style.display = 'block';
-        fetchNewStoryWriter();
-    } else if (mode === 'quiz') {
-        activeGameSettings = {
-            mode: 'quiz',
-            statuses: formData.getAll('game_statuses[]'),
-            sort_order: sortOrder
-        };
-        document.getElementById('gameSetupCard').style.display = 'none';
-        document.getElementById('gamePlayCard').style.display = 'none';
-        document.getElementById('derDieDasPlayCard').style.display = 'none';
-        document.getElementById('deutschMeisterPlayCard').style.display = 'none';
-        document.getElementById('aiStoryPlayCard').style.display = 'none';
-        document.getElementById('aiStoryWriterPlayCard').style.display = 'none';
-        document.getElementById('quizPlayCard').style.display = 'block';
-        fetchNextGameWord();
-    } else if (mode === 'der_die_das') {
-        activeGameSettings = { mode: 'der_die_das' };
+    const filterSettings = {
+        statuses: formData.getAll('game_statuses[]'),
+        sharepoint_lists: formData.getAll('sharepoint_lists[]'),
+        themen: themenList,
+        categories: formData.getAll('categories[]'),
+        sort_order: sortOrder
+    };
+
+    if (mode === 'der_die_das') {
+        activeGameSettings = { mode: 'der_die_das', ...filterSettings };
         dddStreakCount = 0;
         updateDddStreakUI();
         document.getElementById('gameSetupCard').style.display = 'none';
         document.getElementById('gamePlayCard').style.display = 'none';
-        document.getElementById('aiStoryPlayCard').style.display = 'none';
-        document.getElementById('aiStoryWriterPlayCard').style.display = 'none';
-        document.getElementById('quizPlayCard').style.display = 'none';
         document.getElementById('deutschMeisterPlayCard').style.display = 'none';
         document.getElementById('derDieDasPlayCard').style.display = 'block';
         fetchNextDerDieDasWord();
     } else if (mode === 'deutsch_meister') {
-        activeGameSettings = { mode: 'deutsch_meister' };
+        activeGameSettings = { mode: 'deutsch_meister', ...filterSettings };
         document.getElementById('gameSetupCard').style.display = 'none';
         document.getElementById('gamePlayCard').style.display = 'none';
         document.getElementById('derDieDasPlayCard').style.display = 'none';
-        document.getElementById('aiStoryPlayCard').style.display = 'none';
-        document.getElementById('aiStoryWriterPlayCard').style.display = 'none';
-        document.getElementById('quizPlayCard').style.display = 'none';
         document.getElementById('deutschMeisterPlayCard').style.display = 'block';
         fetchNextDeutschMeisterWord();
     } else {
-        activeGameSettings = {
-            mode: 'standard',
-            statuses: formData.getAll('game_statuses[]'),
-            sharepoint_lists: formData.getAll('sharepoint_lists[]'),
-            themen: themenList,
-            categories: formData.getAll('categories[]'),
-            sort_order: sortOrder
-        };
+        activeGameSettings = { mode: 'standard', ...filterSettings };
 
         document.getElementById('gameSetupCard').style.display = 'none';
         document.getElementById('derDieDasPlayCard').style.display = 'none';
         document.getElementById('deutschMeisterPlayCard').style.display = 'none';
-        document.getElementById('aiStoryPlayCard').style.display = 'none';
-        document.getElementById('aiStoryWriterPlayCard').style.display = 'none';
-        document.getElementById('quizPlayCard').style.display = 'none';
         document.getElementById('gamePlayCard').style.display = 'block';
         fetchNextGameWord();
     }
@@ -3984,7 +3554,12 @@ async function fetchNextDeutschMeisterWord() {
         wordDisplay.textContent = 'Lade...';
         wordDisplay.style.color = 'grey';
 
-        const res = await fetch('index.php?api=deutsch_meister_next&_ts=' + Date.now(), { cache: 'no-store' });
+        const res = await fetch('index.php?api=deutsch_meister_next&_ts=' + Date.now(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            cache: 'no-store',
+            body: JSON.stringify(activeGameSettings || {})
+        });
         const data = await res.json();
 
         if (data.error === 'Unauthorized') {
@@ -3993,7 +3568,7 @@ async function fetchNextDeutschMeisterWord() {
         }
 
         if (!data.success || !data.word) {
-            wordDisplay.textContent = 'Keine aktiven Wörter gefunden!';
+            wordDisplay.textContent = 'Keine Wörter gefunden!';
             return;
         }
 
@@ -4039,11 +3614,11 @@ async function checkDeutschMeisterSentence() {
             const hiddenDetails = document.getElementById('dmHiddenDetails');
 
             if (data.evaluation_result === 'ok') {
-                badge.innerHTML = `<span style="color: var(--md-aktiva-green);">🎉 Perfekt! +${data.points} Punkte</span>`;
+                badge.innerHTML = `<span style="color: var(--md-aktiva-green);">🎉 Perfekt! +${data.points} ${data.points === 1 ? 'Punkt' : 'Punkte'}</span>`;
             } else if (data.evaluation_result === 'wrong_context') {
-                badge.innerHTML = `<span style="color: var(--md-danger);">❌ Falscher Kontext! -1 Punkt</span>`;
+                badge.innerHTML = `<span style="color: var(--md-danger);">❌ Falscher Kontext! ${data.points} Punkt</span>`;
             } else {
-                badge.innerHTML = `<span style="color: var(--md-warning-yellow);">⚠️ Grammatikfehler! +${data.points} Punkt</span>`;
+                badge.innerHTML = `<span style="color: var(--md-warning-yellow);">⚠️ Grammatikfehler! ${data.points > 0 ? '+' : ''}${data.points} Punkt</span>`;
             }
 
             feedbackText.innerHTML = parseMarkdown(data.feedback);
@@ -4129,7 +3704,12 @@ async function fetchNextDerDieDasWord() {
         transDisplay.textContent = '';
         transDisplay.style.display = 'none';
 
-        const res = await fetch('index.php?api=der_die_das_next&_ts=' + Date.now(), { cache: 'no-store' });
+        const res = await fetch('index.php?api=der_die_das_next&_ts=' + Date.now(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            cache: 'no-store',
+            body: JSON.stringify(activeGameSettings || {})
+        });
         const data = await res.json();
 
         if (data.error === 'Unauthorized') {
@@ -4224,10 +3804,10 @@ async function submitDerDieDasAnswer(guessedArtikel) {
                 if (data.super_booster) {
                     feedbackText.innerHTML = `<span style="color: #ab47bc; font-size: 1.2rem;">🚀 GODMODE SUPER BOOSTER! 10er Streak geknackt! (+9 Score & Revisionsdatum aktualisiert)</span>`;
                 } else {
-                    feedbackText.innerHTML = `<span style="color: var(--md-aktiva-green);">Sehr gut! (+3 Score, Status: ${escapeHtml(data.new_status)})</span>`;
+                    feedbackText.innerHTML = `<span style="color: var(--md-aktiva-green);">Sehr gut! (+${data.points} Score, Status: ${escapeHtml(data.new_status)})</span>`;
                 }
             } else {
-                feedbackText.innerHTML = `<span style="color: var(--md-danger);">Schade! Streak auf 0 zurückgesetzt. Richtiger Artikel: <strong>${escapeHtml(correctArt)}</strong> (-1 Punkt)</span>`;
+                feedbackText.innerHTML = `<span style="color: var(--md-danger);">Schade! Streak auf 0 zurückgesetzt. Richtiger Artikel: <strong>${escapeHtml(correctArt)}</strong> (${data.points} Punkt)</span>`;
             }
 
             document.getElementById('dddFeedbackContainer').style.display = 'block';
@@ -4293,6 +3873,8 @@ async function checkDddSentence() {
                     msg = '<br><br>🎉 Absolut fehlerfrei und idiomatisch! Super-Booster angewendet (+9 Punkte / 3x sehr gut)!';
                 } else if (data.points_added === 3) {
                     msg = '<br><br>🎉 Absolut fehlerfrei und idiomatisch! +3 Punkte Booster gutgeschrieben!';
+                } else if (data.is_idiomatic) {
+                    msg = `<br><br>✅ Richtig! +${data.points_added} Punkt (Wort ist noch nicht aktiva).`;
                 } else {
                     msg = `<br><br>✅ Grammatikalisch korrekt! (Zwar nicht perfekt idiomatisch, daher +${data.points_added} Punkt vergeben).`;
                 }
@@ -4300,7 +3882,7 @@ async function checkDddSentence() {
                 todayReviewedCount++;
                 updateDailyTrackerUI();
             } else {
-                correctionEl.innerHTML = `<span style="color: #e53935; font-weight: bold;">⚠️ Der Satz enthält Grammatikfehler (+1 Punkt gutgeschrieben).</span><br><br><span style="color: var(--md-on-surface);">${parseMarkdown(data.correction)}</span>`;
+                correctionEl.innerHTML = `<span style="color: #e53935; font-weight: bold;">⚠️ Der Satz enthält Grammatikfehler (${data.points_added > 0 ? '+' + data.points_added + ' Punkt gutgeschrieben' : 'keine Punkte'}).</span><br><br><span style="color: var(--md-on-surface);">${parseMarkdown(data.correction)}</span>`;
                 todayReviewedCount++;
                 updateDailyTrackerUI();
             }
@@ -4310,248 +3892,6 @@ async function checkDddSentence() {
     } catch (err) {
         console.error('Fehler beim Prüfen des Satzes', err);
         correctionEl.textContent = 'Netzwerkfehler.';
-    }
-}
-
-async function fetchNewStory() {
-    try {
-        document.getElementById('aiStoryDisplay').innerHTML = 'Lade Geschichte von Deepseek...';
-        document.getElementById('wordsRatingContainer').innerHTML = '';
-        document.getElementById('ratingHeaderTitle').style.display = 'block';
-
-        const res = await fetch('index.php?api=ai_story_game_next&_ts=' + Date.now(), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            cache: 'no-store',
-            body: JSON.stringify(activeGameSettings || {})
-        });
-        const data = await res.json();
-
-        if (data.error === 'Unauthorized') {
-            window.location.href = 'login.php';
-            return;
-        }
-
-        if (!data.success) {
-            document.getElementById('aiStoryDisplay').innerHTML = `<span style="color: var(--md-danger);">${escapeHtml(data.error || 'Fehler beim Laden der Geschichte.')}</span>`;
-            return;
-        }
-
-        currentStoryData = data;
-        renderStoryGame(data);
-    } catch (err) {
-        console.error('Fehler beim Laden der KI-Geschichte', err);
-        document.getElementById('aiStoryDisplay').innerHTML = '<span style="color: var(--md-danger);">Netzwerkfehler beim Laden der Geschichte.</span>';
-    }
-}
-
-function loadNewStory() {
-    fetchNewStory();
-}
-
-async function fetchNewStoryWriter() {
-    try {
-        document.getElementById('writerWordsList').innerHTML = 'Lade Wörter...';
-        document.getElementById('userStoryInput').value = '';
-        document.getElementById('storyCorrectionResult').style.display = 'none';
-
-        const res = await fetch('index.php?api=ai_story_writer_next&_ts=' + Date.now(), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            cache: 'no-store',
-            body: JSON.stringify(activeGameSettings || {})
-        });
-        const data = await res.json();
-
-        if (data.error === 'Unauthorized') {
-            window.location.href = 'login.php';
-            return;
-        }
-
-        if (!data.success) {
-            document.getElementById('writerWordsList').innerHTML = `<span style="color: var(--md-danger);">${escapeHtml(data.error || 'Fehler beim Laden der Wörter.')}</span>`;
-            return;
-        }
-
-        currentWriterData = data;
-        renderStoryWriter(data);
-    } catch (err) {
-        console.error('Fehler beim Laden der Wörter für das Schreibtraining', err);
-        document.getElementById('writerWordsList').innerHTML = '<span style="color: var(--md-danger);">Netzwerkfehler beim Laden der Wörter.</span>';
-    }
-}
-
-function loadNewStoryWriter() {
-    fetchNewStoryWriter();
-}
-
-function renderStoryWriter(data) {
-    const container = document.getElementById('writerWordsList');
-    container.innerHTML = '';
-
-    if (!data.words || data.words.length === 0) {
-        container.innerHTML = '<div style="color: var(--md-text-muted);">Keine Wörter gefunden.</div>';
-        return;
-    }
-
-    data.words.forEach(wordObj => {
-        const artClass = getArticleColorClass(wordObj.Artikel);
-        const itemDiv = document.createElement('div');
-        itemDiv.className = 'word-rating-item';
-        itemDiv.setAttribute('data-word', wordObj.Wort);
-        itemDiv.innerHTML = `
-            <div class="word-rating-header">
-                <div>
-                    <span class="${artClass}" style="font-size: 1.1rem; font-weight: 600;">${escapeHtml(wordObj.Wort)}</span>
-                    <div style="margin-top: 6px;">
-                        <span class="story-word-trans" style="font-size: 0.95rem; color: var(--md-accent-text); display: none;">${escapeHtml(wordObj.Übersetzung || 'Keine Übersetzung')}</span>
-                        <button type="button" class="btn btn-secondary" style="padding: 2px 6px; font-size: 0.75rem;" onclick="toggleStoryTrans(this)">Übersetzung anzeigen</button>
-                    </div>
-                </div>
-                <div class="word-rating-buttons">
-                    <button type="button" class="btn btn-aktiva" style="padding: 6px 6px; font-size: 0.7rem;" onclick="rateWriterWord('${escapeJs(wordObj.Wort)}', 'sehr_gut', this)">sehr gut ⭐</button>
-                    <button type="button" class="btn btn-success" style="padding: 6px 6px; font-size: 0.7rem;" onclick="rateWriterWord('${escapeJs(wordObj.Wort)}', 'yes', this)">ja 👍</button>
-                    <button type="button" class="btn" style="padding: 6px 6px; font-size: 0.7rem; background-color: var(--md-primary);" onclick="rateWriterWord('${escapeJs(wordObj.Wort)}', 'wiederholen', this)">wiederholen</button>
-                    <button type="button" class="btn btn-passiv" style="padding: 6px 6px; font-size: 0.7rem;" onclick="rateWriterWord('${escapeJs(wordObj.Wort)}', 'passiv', this)">passiv</button>
-                    <button type="button" class="btn" style="padding: 6px 6px; font-size: 0.7rem; background-color: #424242;" onclick="rateWriterWord('${escapeJs(wordObj.Wort)}', 'warteschlange', this)">warteschlange</button>
-                </div>
-            </div>
-        `;
-        container.appendChild(itemDiv);
-    });
-}
-
-async function checkUserStoryWithAI() {
-    const storyText = document.getElementById('userStoryInput').value.trim();
-    if (!storyText) {
-        alert('Bitte schreibe zuerst eine Geschichte!');
-        return;
-    }
-
-    if (!currentWriterData || !currentWriterData.words) {
-        alert('Keine Wörter geladen.');
-        return;
-    }
-
-    const btn = document.getElementById('checkStoryBtn');
-    const resultBox = document.getElementById('storyCorrectionResult');
-    const correctionText = document.getElementById('storyCorrectionText');
-
-    btn.disabled = true;
-    btn.textContent = 'Korrigiere...';
-    resultBox.style.display = 'none';
-
-    try {
-        const res = await fetch('index.php?api=ai_story_writer_check&_ts=' + Date.now(), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            cache: 'no-store',
-            body: JSON.stringify({
-                story: storyText,
-                words: currentWriterData.words
-            })
-        });
-        const data = await res.json();
-
-        if (data.error === 'Unauthorized') {
-            window.location.href = 'login.php';
-            return;
-        }
-
-        if (data.success) {
-            correctionText.innerHTML = parseMarkdown(data.correction);
-            resultBox.style.display = 'block';
-            resultBox.scrollIntoView({ behavior: 'smooth' });
-        } else {
-            correctionText.textContent = data.error || 'Fehler bei der Korrektur.';
-            resultBox.style.display = 'block';
-        }
-    } catch (err) {
-        console.error('KI-Korrektur fehlgeschlagen', err);
-        correctionText.textContent = 'Netzwerkfehler.';
-        resultBox.style.display = 'block';
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'Geschichte korrigieren';
-    }
-}
-
-async function rateWriterWord(wort, result, btnElement) {
-    const parentContainer = btnElement.closest('.word-rating-item');
-
-    parentContainer.style.opacity = '0';
-    parentContainer.style.transform = 'translateY(-10px)';
-    setTimeout(() => {
-        parentContainer.remove();
-    }, 300);
-
-    try {
-        const res = await fetch('index.php?api=game_answer&_ts=' + Date.now(), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            cache: 'no-store',
-            body: JSON.stringify({ wort: wort, result: result })
-        });
-        const data = await res.json();
-        if (data.error === 'Unauthorized') {
-            window.location.href = 'login.php';
-            return;
-        }
-
-        todayReviewedCount++;
-        updateDailyTrackerUI();
-    } catch (err) {
-        console.error('Fehler beim Speichern der Bewertung', err);
-    }
-}
-
-function renderStoryGame(data) {
-    document.getElementById('aiStoryDisplay').innerHTML = parseMarkdown(data.story);
-
-    const container = document.getElementById('wordsRatingContainer');
-    container.innerHTML = '';
-
-    if (!data.words || data.words.length === 0) {
-        container.innerHTML = '<div style="text-align: center; color: var(--md-text-muted);">Keine Wörter gefunden.</div>';
-        return;
-    }
-
-    data.words.forEach(wordObj => {
-        const artClass = getArticleColorClass(wordObj.Artikel);
-        const itemDiv = document.createElement('div');
-        itemDiv.className = 'word-rating-item';
-        itemDiv.setAttribute('data-word', wordObj.Wort);
-        itemDiv.innerHTML = `
-            <div class="word-rating-header">
-                <div>
-                    <span class="${artClass}" style="font-size: 1.1rem; font-weight: 600;">${escapeHtml(wordObj.Wort)}</span>
-                    <div style="margin-top: 6px;">
-                        <span class="story-word-trans" style="font-size: 0.95rem; color: var(--md-accent-text); display: none;">${escapeHtml(wordObj.Übersetzung || 'Keine Übersetzung')}</span>
-                        <button type="button" class="btn btn-secondary" style="padding: 2px 6px; font-size: 0.75rem;" onclick="toggleStoryTrans(this)">Übersetzung anzeigen</button>
-                    </div>
-                </div>
-                <div class="word-rating-buttons">
-                    <button type="button" class="btn btn-aktiva" style="padding: 6px 6px; font-size: 0.7rem;" onclick="rateWord('${escapeJs(wordObj.Wort)}', 'sehr_gut', this)">sehr gut ⭐</button>
-                    <button type="button" class="btn btn-success" style="padding: 6px 6px; font-size: 0.7rem;" onclick="rateWord('${escapeJs(wordObj.Wort)}', 'yes', this)">ja 👍</button>
-                    <button type="button" class="btn" style="padding: 6px 6px; font-size: 0.7rem; background-color: var(--md-primary);" onclick="rateWord('${escapeJs(wordObj.Wort)}', 'wiederholen', this)">wiederholen</button>
-                    <button type="button" class="btn btn-passiv" style="padding: 6px 6px; font-size: 0.7rem;" onclick="rateWord('${escapeJs(wordObj.Wort)}', 'passiv', this)">passiv</button>
-                    <button type="button" class="btn" style="padding: 6px 6px; font-size: 0.7rem; background-color: #424242;" onclick="rateWord('${escapeJs(wordObj.Wort)}', 'warteschlange', this)">warteschlange</button>
-                </div>
-            </div>
-        `;
-        container.appendChild(itemDiv);
-    });
-}
-
-function toggleStoryTrans(btn) {
-    const parentContainer = btn.closest('div');
-    const transSpan = parentContainer.querySelector('.story-word-trans');
-    if (transSpan.style.display === 'none') {
-        transSpan.style.display = 'inline';
-        btn.textContent = 'Übersetzung ausblenden';
-    } else {
-        transSpan.style.display = 'none';
-        btn.textContent = 'Übersetzung anzeigen';
     }
 }
 
@@ -4567,40 +3907,6 @@ function toggleStoryTransTable(btn) {
     }
 }
 
-async function rateWord(wort, result, btnElement) {
-    const parentContainer = btnElement.closest('.word-rating-item');
-
-    parentContainer.style.opacity = '0';
-    parentContainer.style.transform = 'translateY(-10px)';
-    setTimeout(() => {
-        parentContainer.remove();
-
-        const container = document.getElementById('wordsRatingContainer');
-        if (container && container.children.length === 0) {
-            document.getElementById('ratingHeaderTitle').style.display = 'none';
-        }
-    }, 300);
-
-    try {
-        const res = await fetch('index.php?api=game_answer&_ts=' + Date.now(), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            cache: 'no-store',
-            body: JSON.stringify({ wort: wort, result: result })
-        });
-        const data = await res.json();
-        if (data.error === 'Unauthorized') {
-            window.location.href = 'login.php';
-            return;
-        }
-
-        todayReviewedCount++;
-        updateDailyTrackerUI();
-    } catch (err) {
-        console.error('Fehler beim Speichern der Bewertung', err);
-    }
-}
-
 async function trainSpecificWord(wort) {
     document.getElementById('themaModalOverlay').style.display = 'none';
     switchView('game');
@@ -4608,15 +3914,11 @@ async function trainSpecificWord(wort) {
     document.getElementById('gameSetupCard').style.display = 'none';
     document.getElementById('derDieDasPlayCard').style.display = 'none';
     document.getElementById('deutschMeisterPlayCard').style.display = 'none';
-    document.getElementById('aiStoryPlayCard').style.display = 'none';
-    document.getElementById('aiStoryWriterPlayCard').style.display = 'none';
-    document.getElementById('quizPlayCard').style.display = 'none';
     document.getElementById('gamePlayCard').style.display = 'block';
     await fetchNextGameWord();
 }
 
 async function fetchNextGameWord() {
-    if (quizTimerInterval) clearInterval(quizTimerInterval);
 
     try {
         const res = await fetch('index.php?api=game_next&_ts=' + Date.now(), {
@@ -4629,14 +3931,6 @@ async function fetchNextGameWord() {
 
         if (data.error === 'Unauthorized') {
             window.location.href = 'login.php';
-            return;
-        }
-
-        if (data.mode === 'quiz') {
-            currentQuizData = data;
-            lastPopupWordObject = data.word;
-            renderQuizGame(data);
-            startQuizTimer();
             return;
         }
 
@@ -4703,6 +3997,13 @@ async function fetchNextGameWord() {
         document.getElementById('gGrundverb').textContent = currentGameWord.grundverb || '-';
         document.getElementById('gPraefix').textContent = currentGameWord.praefix || '-';
         document.getElementById('gPraeposition').textContent = currentGameWord.praeposition_kollokation || '-';
+        const gIsVerbWord = (currentGameWord.VerbFlag == 1);
+        ['gGrundverbRow', 'gPraefixRow', 'gPraepositionRow'].forEach(id => {
+            document.getElementById(id).style.display = gIsVerbWord ? '' : 'none';
+        });
+        ['gArtRow', 'gPluralRow'].forEach(id => {
+            document.getElementById(id).style.display = gIsVerbWord ? 'none' : '';
+        });
         document.getElementById('gWart').textContent = currentGameWord.Wortarten;
         document.getElementById('gIsVerb').textContent = (currentGameWord.VerbFlag == 1) ? 'Ja' : 'Nein';
         document.getElementById('gEx').textContent = currentGameWord.Beispiel;
@@ -4710,127 +4011,14 @@ async function fetchNextGameWord() {
 
         document.getElementById('userSentenceInput').value = '';
         document.getElementById('aiCorrectionResult').style.display = 'none';
-        document.getElementById('aiSuggestionResult').style.display = 'none';
         document.getElementById('sentenceWriterContainer').style.display = 'none';
-        document.getElementById('toggleSentenceWriterBtn').textContent = '✍️ Satz schreiben';
-        document.getElementById('aiTrainDetails').open = false;
+        document.getElementById('toggleSentenceWriterBtn').textContent = 'Mit KI trainieren';
 
         document.getElementById('detailsBox').style.display = 'none';
         document.getElementById('revealBtn').innerHTML = 'Übersetzung anzeigen';
     } catch (err) {
         console.error('Fehler beim Laden des nächsten Vokabelworts', err);
     }
-}
-
-function renderQuizGame(data) {
-    const grid = document.getElementById('quizGrid');
-    grid.innerHTML = '';
-
-    if (!data.options || data.options.length === 0) {
-        grid.innerHTML = `<div style="grid-column: span 2; text-align: center; color: var(--md-text-muted);">Keine Optionen verfügbar.</div>`;
-        return;
-    }
-
-    const wordDisplay = document.getElementById('quizWordDisplay');
-    wordDisplay.textContent = data.word.Wort;
-    wordDisplay.className = `word-display ${getArticleColorClass(data.word.Artikel)}`;
-
-    data.options.forEach(optText => {
-        const card = document.createElement('div');
-        card.className = 'quiz-card';
-        card.textContent = optText;
-        card.onclick = () => handleQuizClick(optText, data.correct_translation);
-        grid.appendChild(card);
-    });
-}
-
-function startQuizTimer() {
-    if (quizTimerInterval) clearInterval(quizTimerInterval);
-    quizTimeLeft = quizTotalTime;
-    quizStartTime = Date.now();
-    const fillEl = document.getElementById('quizTimerFill');
-    if (fillEl) {
-        fillEl.style.width = '100%';
-        fillEl.style.backgroundColor = 'var(--md-success)';
-    }
-
-    quizTimerInterval = setInterval(() => {
-        quizTimeLeft -= 0.1;
-        if (fillEl) {
-            const pct = Math.max(0, (quizTimeLeft / quizTotalTime) * 100);
-            fillEl.style.width = pct + '%';
-            if (quizTimeLeft <= 10) {
-                fillEl.style.backgroundColor = 'var(--md-primary)';
-            }
-        }
-
-        if (quizTimeLeft <= 0) {
-            clearInterval(quizTimerInterval);
-            handleQuizTimeout();
-        }
-    }, 100);
-}
-
-async function handleQuizTimeout() {
-    if (!currentQuizData || !currentQuizData.word) return;
-    const cards = document.querySelectorAll('#quizGrid .quiz-card');
-    cards.forEach(card => { card.onclick = null; });
-
-    cards.forEach(card => {
-        if (card.textContent.trim() === currentQuizData.correct_translation) {
-            card.classList.add('correct');
-        }
-    });
-
-    await fetch('index.php?api=game_answer&_ts=' + Date.now(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        cache: 'no-store',
-        body: JSON.stringify({ wort: currentQuizData.word.Wort, result: 'passiv' })
-    });
-    todayReviewedCount++;
-    updateDailyTrackerUI();
-
-    showQuizModal(false, currentQuizData.word.Wort, 'passiv', 45);
-}
-
-async function handleQuizClick(selectedTranslation, correctTranslation) {
-    if (quizTimerInterval) clearInterval(quizTimerInterval);
-    const elapsedSeconds = (Date.now() - quizStartTime) / 1000;
-    const cards = document.querySelectorAll('#quizGrid .quiz-card');
-    const isCorrect = (selectedTranslation === correctTranslation);
-
-    cards.forEach(card => {
-        const txt = card.textContent.trim();
-        if (txt === correctTranslation) {
-            card.classList.add('correct');
-        } else if (txt === selectedTranslation && !isCorrect) {
-            card.classList.add('wrong');
-        }
-        card.onclick = null;
-    });
-
-    let answerResult = 'passiv';
-    if (isCorrect) {
-        if (elapsedSeconds <= 5) {
-            answerResult = 'sehr_gut';
-        } else {
-            answerResult = 'yes';
-        }
-    } else {
-        answerResult = 'passiv';
-    }
-
-    await fetch('index.php?api=game_answer&_ts=' + Date.now(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        cache: 'no-store',
-        body: JSON.stringify({ wort: currentQuizData.word.Wort, result: answerResult })
-    });
-    todayReviewedCount++;
-    updateDailyTrackerUI();
-
-    showQuizModal(isCorrect, currentQuizData.word.Wort, answerResult, elapsedSeconds);
 }
 
 async function directPromoteCurrentWord() {
@@ -4923,43 +4111,6 @@ async function deleteWordFromPopup(wort) {
     }
 }
 
-function showQuizModal(isCorrect, wordKey, resultType, elapsedSeconds) {
-    if (!currentQuizData || !currentQuizData.word) return;
-    const w = currentQuizData.word;
-
-    let rewardHtml = '';
-    let titleEmoji = '🎉';
-    let titleText = 'Richtig!';
-
-    if (!isCorrect) {
-        titleEmoji = '⏰';
-        titleText = 'Falsch oder Zeit abgelaufen!';
-        rewardHtml = '<div style="color: #e53935; font-weight: 600; margin-top: 6px;">❌ Ergebnis: Falsch (Score zurückgesetzt)</div>';
-    } else if (resultType === 'sehr_gut') {
-        titleEmoji = '🚀';
-        titleText = 'Blitzschnell!';
-        rewardHtml = `<div style="color: var(--md-aktiva-green); font-weight: 600; margin-top: 6px;">⚡ Sehr gut ⭐ (${elapsedSeconds.toFixed(1)}s): +3 Score ⭐⭐⭐</div>`;
-    } else {
-        titleEmoji = '🎯';
-        titleText = 'Perfekt!';
-        rewardHtml = `<div style="color: var(--md-success); font-weight: 600; margin-top: 6px;">✅ Standard-Erfolg 👍 (${elapsedSeconds.toFixed(1)}s): Richtig beantwortet! (+1 Score / Ja) 👍</div>`;
-    }
-
-    document.getElementById('modalTitle').innerHTML = `${titleEmoji} ${titleText}`;
-    const modalText = document.getElementById('modalThemaText');
-    const artClass = getArticleColorClass(w.Artikel);
-    modalText.innerHTML = `
-        <div style="margin-bottom: 8px; font-size: 1.05rem;"><strong>Wort:</strong> <span class="${artClass}" style="font-weight: 600;">${escapeHtml(w.Wort)}</span></div>
-        <div style="margin-bottom: 8px;"><strong>Übersetzung:</strong> ${escapeHtml(w.Übersetzung)}</div>
-        <div style="margin-bottom: 8px;"><strong>Thema:</strong> <em>${escapeHtml(w.Thema)}</em></div>
-        <hr style="border: 0; border-top: 1px solid var(--md-border); margin: 10px 0;">
-        ${rewardHtml}
-    `;
-
-    renderPopupActionButtons(w);
-    document.getElementById('themaModalOverlay').style.display = 'flex';
-}
-
 function closeThemaModal() {
     document.getElementById('themaModalOverlay').style.display = 'none';
     fetchNextGameWord();
@@ -4983,10 +4134,10 @@ function toggleSentenceWriter() {
     const btn = document.getElementById('toggleSentenceWriterBtn');
     if (container.style.display === 'none') {
         container.style.display = 'block';
-        btn.textContent = '✕ Satz schreiben schließen';
+        btn.textContent = 'KI-Training schließen';
     } else {
         container.style.display = 'none';
-        btn.textContent = '✍️ Satz schreiben';
+        btn.textContent = 'Mit KI trainieren';
     }
 }
 
@@ -4994,94 +4145,6 @@ function parseMarkdown(text) {
     let safeText = escapeHtml(text);
     safeText = safeText.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
     return safeText.replace(/\n/g, '<br>');
-}
-
-async function suggestSentenceWithAI() {
-    if (!currentGameWord) return;
-
-    const btn = document.getElementById('suggestSentenceBtn');
-    const resultBox = document.getElementById('aiSuggestionResult');
-    const suggestionText = document.getElementById('aiSuggestionText');
-
-    btn.disabled = true;
-    btn.textContent = 'Generiere Vorschlag...';
-    resultBox.style.display = 'none';
-
-    try {
-        const res = await fetch('index.php?api=suggest_sentence&_ts=' + Date.now(), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            cache: 'no-store',
-            body: JSON.stringify({ word: currentGameWord.Wort })
-        });
-        const data = await res.json();
-
-        if (data.error === 'Unauthorized') {
-            window.location.href = 'login.php';
-            return;
-        }
-
-        if (data.success) {
-            suggestionText.innerHTML = parseMarkdown(data.suggestion);
-            resultBox.style.display = 'block';
-        } else {
-            suggestionText.textContent = data.error || 'Fehler bei der Vorschlagserstellung.';
-            resultBox.style.display = 'block';
-        }
-    } catch (err) {
-        console.error('KI-Vorschlag fehlgeschlagen', err);
-        suggestionText.textContent = 'Netzwerkfehler.';
-        resultBox.style.display = 'block';
-    } finally {
-        btn.disabled = false;
-        btn.textContent = '💡 Satz vorschlagen';
-    }
-}
-
-async function checkSentenceWithAI() {
-    const sentence = document.getElementById('userSentenceInput').value.trim();
-    if (!sentence || !currentGameWord) return;
-
-    const btn = document.getElementById('checkSentenceBtn');
-    const resultBox = document.getElementById('aiCorrectionResult');
-    const correctionText = document.getElementById('aiCorrectionText');
-
-    btn.disabled = true;
-    btn.textContent = 'Prüfe...';
-    resultBox.style.display = 'none';
-
-    try {
-        const res = await fetch('index.php?api=check_sentence&_ts=' + Date.now(), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            cache: 'no-store',
-            body: JSON.stringify({
-                sentence: sentence,
-                word: currentGameWord.Wort
-            })
-        });
-        const data = await res.json();
-
-        if (data.error === 'Unauthorized') {
-            window.location.href = 'login.php';
-            return;
-        }
-
-        if (data.success) {
-            correctionText.innerHTML = parseMarkdown(data.correction);
-            resultBox.style.display = 'block';
-        } else {
-            correctionText.textContent = data.error || 'Fehler bei der Prüfung.';
-            resultBox.style.display = 'block';
-        }
-    } catch (err) {
-        console.error('KI-Prüfung fehlgeschlagen', err);
-        correctionText.textContent = 'Netzwerkfehler.';
-        resultBox.style.display = 'block';
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'Normal prüfen';
-    }
 }
 
 async function checkStandardSentenceBooster() {
