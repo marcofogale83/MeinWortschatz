@@ -1486,6 +1486,10 @@ try {
         .form-container { display: none; margin-bottom: 1.5rem; }
         .form-container.active { display: block; }
         .form-toggle-bar { margin-bottom: 1.2rem; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+        @media (max-width: 600px) {
+            .form-toggle-bar { flex-direction: column; align-items: stretch; gap: 10px; }
+            .form-toggle-bar .btn { width: 100%; min-height: 48px; font-size: 1rem; }
+        }
 
         .game-container { max-width: 800px; margin: 0 auto; }
 
@@ -1954,7 +1958,6 @@ try {
                         </div>
                         <a class="account-menu-item" href="profile.php">👤 Mein Profil</a>
                         <a class="account-menu-item" href="community.php">👥 Community</a>
-                        <button type="button" class="account-menu-item" onclick="document.getElementById('accountMenu').open = false; switchView('statistics');">📊 Statistiken</button>
                         <a class="account-menu-item" href="index.php?api=export_csv">📥 CSV exportieren</a>
                         <a class="account-menu-item account-menu-logout" href="logout.php">↪ Abmelden</a>
                         </div>
@@ -1981,6 +1984,7 @@ try {
         <div class="form-toggle-bar" id="formToggleBar">
             <button type="button" class="btn" onclick="openAddForm()" id="formToggleBtn">➕ Neues Wort hinzufügen</button>
             <button type="button" class="btn btn-success" onclick="openGameSelection()">🎯 Training starten</button>
+            <button type="button" class="btn btn-info" onclick="switchView('statistics')">📊 Statistiken</button>
         </div>
 
         <div class="form-container" id="formContainer">
@@ -2170,15 +2174,6 @@ try {
                                 <h3 class="filter-group-title">📈 Status</h3>
                                 <div class="filter-grid">
                                 <label class="filter-field">
-                                    <span>Score</span>
-                                    <select id="filterScore" name="score" onchange="loadDashboardData(true)">
-                                        <option value="">Alle Scores</option>
-                                        <?php foreach ($initialScores as $s): ?>
-                                            <option value="<?= htmlspecialchars($s) ?>">Score: <?= htmlspecialchars($s) ?></option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </label>
-                                <label class="filter-field">
                                     <span>Status</span>
                                     <select id="filterStatus" name="status" onchange="loadDashboardData(true)">
                                         <option value="">Alle Status</option>
@@ -2313,7 +2308,7 @@ try {
                 <form id="gameSetupForm" onsubmit="startGameSession(event)">
                     <label for="gameModeSelect">Trainingsmodus auswählen:</label>
                     <select id="gameModeSelect" name="game_mode" style="margin-bottom: 1.2rem;" onchange="onGameModeChange()">
-                        <option value="standard">Standard Vokabeltrainer</option>
+                        <option value="standard">Karteikarten</option>
                         <option value="der_die_das">Der-Die-Das Training</option>
                         <option value="deutsch_meister">Deutsch Meister</option>
                     </select>
@@ -2395,18 +2390,9 @@ try {
                 <div id="gameNotice" style="background: var(--md-notice-bg); color: var(--md-notice-text); padding:12px; border-radius:8px; margin-bottom:1rem; font-size:0.85rem; border: 1px solid var(--md-notice-border); display:none;"></div>
 
                 <div class="card">
-                    <div style="display: flex; justify-content: space-between; align-items:center; font-size: 0.85rem; color: var(--md-text-muted); flex-wrap: wrap; gap: 6px;">
-                        <span id="gameMetaInfo"></span>
-                        <div style="display: flex; gap: 6px;">
-                            <div class="rate-group action-group is-inline" role="group" aria-label="Wort-Aktionen"><button type="button" class="rate-btn a-edit" onclick="openEditFromGame()" title="Bearbeiten"><span class="rate-icon" aria-hidden="true">✏️</span><span>Bear&shy;beiten</span></button><button type="button" class="rate-btn a-delete" onclick="deleteWordFromGame()" title="Löschen"><span class="rate-icon" aria-hidden="true">🗑️</span><span>Löschen</span></button></div>
-                        </div>
-                    </div>
-
-                    <div style="text-align: center; margin-top: 15px;">
-                        <span style="font-size: 0.8rem; text-transform: uppercase; color: var(--md-text-muted); letter-spacing: 1px;">Übersetzen oder erinnern:</span>
+                    <div style="text-align: center; margin: 0 0 1rem 0; padding: 18px 14px 6px 14px; background: var(--md-surface-card); border: 1px solid var(--md-border); border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); min-height: 140px; display: flex; flex-direction: column; justify-content: center;">
                         <div id="gameWordDisplay" class="word-display"></div>
                         <div id="gameConjugationDisplay" style="font-size: 0.85rem; color: var(--md-text-purple); margin-top: 2px; margin-bottom: 2px; display: none;"></div>
-                        <div id="gamePraepositionDisplay" style="font-size: 0.85rem; color: var(--md-das); margin-top: 2px; margin-bottom: 2px; display: none;"></div>
                         <div id="gamePluralDisplay" style="font-size: 0.85rem; color: var(--md-accent-text); margin-top: 2px; margin-bottom: 15px; display: none;"></div>
                     </div>
 
@@ -2416,6 +2402,7 @@ try {
 
                     <div id="detailsBox" class="details-box" style="display: none;">
                         <p><strong>Übersetzung:</strong> <span id="gTrans" style="color: var(--md-accent-text); font-size: 1.1rem;"></span></p>
+                        <p><strong>Beispiel:</strong> <em id="gEx"></em></p>
 
                         <div id="imageDisplayContainer" style="margin: 12px 0; text-align: center;">
                             <img id="generatedImageTag" src="" alt="Wort Bild" onclick="openFullscreenImage(this.src)" style="max-width: 100%; max-height: 300px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); display: none; margin: 0 auto 10px auto;" title="Zum Vergrößern anklicken">
@@ -2423,16 +2410,18 @@ try {
                         </div>
 
                         <p><strong>Synonym:</strong> <span id="gSyn" style="color: var(--md-accent-text); font-size: 1.0rem;"></span></p>
-                        <p><strong>Thema:</strong> <span id="gThema"></span></p>
                         <p id="gArtRow"><strong>Artikel:</strong> <span id="gArt"></span></p>
                         <p id="gPluralRow"><strong>Plural:</strong> <span id="gPlural"></span></p>
                         <p id="gGrundverbRow"><strong>Grundverb:</strong> <span id="gGrundverb"></span></p>
                         <p id="gPraefixRow"><strong>Präfix:</strong> <span id="gPraefix"></span></p>
                         <p id="gPraepositionRow"><strong>Präpositionalkollokation:</strong> <span id="gPraeposition"></span></p>
-                        <p><strong>Wortart:</strong> <span id="gWart"></span></p>
                         <p><strong>Ist Verb?:</strong> <span id="gIsVerb"></span></p>
-                        <p><strong>Beispiel:</strong> <em id="gEx"></em></p>
                         <p id="gDates" style="font-size: 0.8rem; color: var(--md-text-muted); margin-top: 10px;"></p>
+                        <div style="border: 1px solid var(--md-border); border-radius: 8px; padding: 8px 12px; margin-top: 12px;">
+                            <p><strong>Liste:</strong> <span id="gList"></span></p>
+                            <p><strong>Thema:</strong> <span id="gThema"></span></p>
+                            <p><strong>Wortart:</strong> <span id="gWart"></span></p>
+                        </div>
                     </div>
 
                     <div class="ai-train-menu">
@@ -2457,8 +2446,9 @@ try {
                     </div>
 
 
-                    <div style="text-align: center; margin-top: 1.5rem; border-top: 1px solid var(--md-border); padding-top: 1rem;">
+                    <div style="display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 1.5rem; border-top: 1px solid var(--md-border); padding-top: 1rem;">
                         <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Trainingseinstellungen ändern</button>
+                        <div class="rate-group action-group is-inline" role="group" aria-label="Wort-Aktionen"><button type="button" class="rate-btn a-edit" onclick="openEditFromGame()" title="Bearbeiten"><span class="rate-icon" aria-hidden="true">✏️</span><span>Bear&shy;beiten</span></button><button type="button" class="rate-btn a-delete" onclick="deleteWordFromGame()" title="Löschen"><span class="rate-icon" aria-hidden="true">🗑️</span><span>Löschen</span></button></div>
                     </div>
                 </div>
             </div>
@@ -3068,7 +3058,6 @@ async function refreshMetadata() {
 
         updateDropdown('filterList', data.lists, 'Alle Listen');
         updateDropdown('filterThema', data.themen, 'Alle Themen');
-        updateDropdown('filterScore', data.scores, 'Alle Scores', 'Score: ');
         updateDropdown('filterStatus', data.statuses, 'Alle Status');
         updateDropdown('filterGrundverb', data.grundverben, 'Alle Grundverben');
         updateDropdown('filterPraefix', data.praefixe, 'Alle Präfixe');
@@ -3975,8 +3964,6 @@ async function fetchNextGameWord() {
 
 // Fills the standard training card with currentGameWord; resetUi closes the details and the KI box
 function renderGameWord(resetUi) {
-    document.getElementById('gameMetaInfo').innerHTML = `Liste: <strong>${escapeHtml(currentGameWord.sharepoint_list || 'N/A')}</strong> | Thema: <strong>${escapeHtml(currentGameWord.Thema || 'N/A')}</strong> | Status: <strong>${escapeHtml(currentGameWord.Status)}</strong> | Score: <strong>${escapeHtml(currentGameWord.Score)}</strong>`;
-
     const wordDisplay = document.getElementById('gameWordDisplay');
     wordDisplay.textContent = currentGameWord.Wort;
     wordDisplay.className = `word-display ${getArticleColorClass(currentGameWord.Artikel)}`;
@@ -3987,15 +3974,6 @@ function renderGameWord(resetUi) {
         conjDisplay.style.display = 'block';
     } else {
         conjDisplay.style.display = 'none';
-    }
-
-    const praepDisplay = document.getElementById('gamePraepositionDisplay');
-    if (currentGameWord.VerbFlag == 1 && currentGameWord.praeposition_kollokation) {
-        // escaped first, then **bold** is converted safely
-        praepDisplay.innerHTML = `Kollokation: ${parseMarkdown(currentGameWord.praeposition_kollokation)}`;
-        praepDisplay.style.display = 'block';
-    } else {
-        praepDisplay.style.display = 'none';
     }
 
     const pluralDisplay = document.getElementById('gamePluralDisplay');
@@ -4016,6 +3994,7 @@ function renderGameWord(resetUi) {
 
     document.getElementById('gTrans').textContent = currentGameWord.Übersetzung;
     document.getElementById('gSyn').textContent = currentGameWord.synonym || '-';
+    document.getElementById('gList').textContent = currentGameWord.sharepoint_list || '-';
     document.getElementById('gThema').textContent = currentGameWord.Thema || '-';
     document.getElementById('gArt').textContent = currentGameWord.Artikel || 'Keiner';
     document.getElementById('gPlural').textContent = currentGameWord.Plural || '-';
@@ -4458,7 +4437,7 @@ function closeFilterMenu() {
 function updateFilterBadge() {
     const badge = document.getElementById('filterBadge');
     if (!badge) return;
-    const ids = ['filterList', 'filterThema', 'filterWortart', 'filterScore', 'filterStatus', 'filterVerbFlag', 'filterGrundverb', 'filterPraefix'];
+    const ids = ['filterList', 'filterThema', 'filterWortart', 'filterStatus', 'filterVerbFlag', 'filterGrundverb', 'filterPraefix'];
     let count = currentLetter ? 1 : 0;
     ids.forEach(id => {
         const el = document.getElementById(id);
@@ -4478,7 +4457,6 @@ async function loadDashboardData(reset = false) {
     const list = document.getElementById('filterList').value;
     const thema = document.getElementById('filterThema').value;
     const wortart = document.getElementById('filterWortart').value;
-    const score = document.getElementById('filterScore').value;
     const status = document.getElementById('filterStatus').value;
     const verbFlag = document.getElementById('filterVerbFlag').value;
     const grundverb = document.getElementById('filterGrundverb').value;
@@ -4486,7 +4464,7 @@ async function loadDashboardData(reset = false) {
     const searchVal = document.getElementById('filterSearch').value.trim();
     const transSearchVal = document.getElementById('filterTranslationSearch').value.trim();
 
-    const url = `index.php?api=get_data&letter=${encodeURIComponent(currentLetter)}&search=${encodeURIComponent(searchVal)}&trans_search=${encodeURIComponent(transSearchVal)}&sharepoint_list=${encodeURIComponent(list)}&thema=${encodeURIComponent(thema)}&wortart=${encodeURIComponent(wortart)}&score=${encodeURIComponent(score)}&status=${encodeURIComponent(status)}&verb_flag=${encodeURIComponent(verbFlag)}&grundverb=${encodeURIComponent(grundverb)}&praefix=${encodeURIComponent(praefix)}&sort=${currentSort}&order=${currentOrder}&offset=${currentOffset}&_ts=` + Date.now();
+    const url = `index.php?api=get_data&letter=${encodeURIComponent(currentLetter)}&search=${encodeURIComponent(searchVal)}&trans_search=${encodeURIComponent(transSearchVal)}&sharepoint_list=${encodeURIComponent(list)}&thema=${encodeURIComponent(thema)}&wortart=${encodeURIComponent(wortart)}&status=${encodeURIComponent(status)}&verb_flag=${encodeURIComponent(verbFlag)}&grundverb=${encodeURIComponent(grundverb)}&praefix=${encodeURIComponent(praefix)}&sort=${currentSort}&order=${currentOrder}&offset=${currentOffset}&_ts=` + Date.now();
 
     try {
         const res = await fetch(url, { cache: 'no-store' });
@@ -4589,7 +4567,6 @@ function resetFilters() {
     document.getElementById('filterThema').value = '';
     updateDashboardWortartenDropdown();
     document.getElementById('filterWortart').value = '';
-    document.getElementById('filterScore').value = '';
     document.getElementById('filterStatus').value = '';
     document.getElementById('filterVerbFlag').value = '';
     document.getElementById('filterGrundverb').value = '';
