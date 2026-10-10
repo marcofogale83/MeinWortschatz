@@ -1719,7 +1719,7 @@ try {
             font-size: 16px; /* 16px stops iOS from zooming into the field */
         }
         .filter-trigger {
-            display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 6px 14px;
+            position: relative; display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; padding: 6px 10px;
             border: 1px solid var(--md-control-border); border-radius: 8px; background: var(--md-control-bg); color: var(--md-on-surface);
             cursor: pointer; list-style: none; font: inherit; font-size: 0.9rem; font-weight: 600; user-select: none;
         }
@@ -1727,6 +1727,8 @@ try {
         .filter-trigger:hover, .filter-menu[open] .filter-trigger { background: var(--md-control-hover); border-color: var(--md-control-border-hover); }
         .filter-trigger:focus-visible { outline: 2px solid var(--md-accent-text); outline-offset: 2px; }
         .filter-menu[open] .account-chevron { margin-top: 4px; transform: rotate(225deg); }
+        .filter-icon { display: block; }
+        .filter-trigger .filter-badge { position: absolute; top: -6px; right: -6px; }
         .filter-badge {
             display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px;
             border-radius: 10px; background: var(--md-primary); color: #fff; font-size: 0.75rem;
@@ -1783,6 +1785,16 @@ try {
         }
         @keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
         @keyframes sheet-fade { from { opacity: 0; } to { opacity: 1; } }
+
+        /* "Training wird geladen" animation */
+        .training-loader { display: none; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 48px 16px; color: var(--md-text-muted); font-size: 0.95rem; text-align: center; }
+        .training-loader.active { display: flex; }
+        .training-loader-dots { display: flex; gap: 8px; }
+        .training-loader-dots span { width: 12px; height: 12px; border-radius: 50%; background: var(--md-accent-text); animation: training-bounce 1s infinite ease-in-out; }
+        .training-loader-dots span:nth-child(2) { animation-delay: 0.15s; }
+        .training-loader-dots span:nth-child(3) { animation-delay: 0.3s; }
+        @keyframes training-bounce { 0%, 80%, 100% { transform: scale(0.5); opacity: 0.4; } 40% { transform: scale(1); opacity: 1; } }
+        @media (prefers-reduced-motion: reduce) { .training-loader-dots span { animation: none; opacity: 0.8; } }
 
         /* Filter sheet content */
         .filter-group { padding: 4px 0 14px; border-bottom: 1px solid var(--md-border); margin-bottom: 12px; }
@@ -2062,7 +2074,7 @@ try {
 
                     <div style="display: flex; gap: 12px; margin-top: 1rem;">
                         <button type="submit" class="btn" id="formSubmitBtn" style="flex: 1;">Wort speichern</button>
-                        <button type="button" class="btn btn-secondary" onclick="resetForm()">Abbrechen</button>
+                        <button type="button" class="btn btn-secondary" onclick="cancelWordForm()">Abbrechen</button>
                     </div>
                 </form>
             </div>
@@ -2074,11 +2086,9 @@ try {
             <form id="filterForm" onsubmit="event.preventDefault(); loadDashboardData(true);">
                 <div class="filter-toolbar">
                     <details class="filter-menu sheet-menu" id="filterMenu">
-                        <summary class="filter-trigger">
-                            <span aria-hidden="true">⚙️</span>
-                            <span>Filter</span>
+                        <summary class="filter-trigger" aria-label="Filter" title="Filter">
+                            <svg class="filter-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M3 4h18l-7 8.5V19l-4 2v-8.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
                             <span class="filter-badge" id="filterBadge" hidden>0</span>
-                            <span class="account-chevron" aria-hidden="true"></span>
                         </summary>
                         <div class="filter-popover sheet-panel filter-panel" role="dialog" aria-label="Filter">
                             <div class="sheet-handle" aria-hidden="true"></div>
@@ -2293,6 +2303,11 @@ try {
                 </div>
             </header>
 
+            <div id="trainingLoader" class="card training-loader" role="status" aria-live="polite">
+                <div class="training-loader-dots" aria-hidden="true"><span></span><span></span><span></span></div>
+                <div>Training wird geladen…</div>
+            </div>
+
             <div id="gameSetupCard" class="card">
                 <h2>Trainingseinstellungen</h2>
                 <form id="gameSetupForm" onsubmit="startGameSession(event)">
@@ -2425,7 +2440,7 @@ try {
 
                         <div id="sentenceWriterContainer" style="display: none; margin-top: 10px;">
                             <label for="userSentenceInput" style="font-size: 0.9rem; font-weight: 500; margin-bottom: 6px;">Schreibe einen Satz mit diesem Wort:</label>
-                            <textarea id="userSentenceInput" rows="2" placeholder="z.B. Ich benutze dieses Wort..." style="width: 100%; max-width: 100%; margin-bottom: 8px; resize: vertical;"></textarea>
+                            <textarea id="userSentenceInput" rows="5" placeholder="z.B. Ich benutze dieses Wort..." style="width: 100%; max-width: 100%; margin-bottom: 8px; resize: vertical;"></textarea>
                             <button type="button" class="btn btn-success" onclick="checkStandardSentenceBooster()" style="width: 100%;">Satz prüfen & Booster holen 🚀</button>
                         </div>
 
@@ -2622,6 +2637,8 @@ let activeGameSettings = null;
 let currentGameWord = null;
 let currentDerDieDasWord = null;
 let currentDeutschMeisterWord = null;
+// Training card to go back to after editing a word from a training (null = normal dashboard edit)
+let editReturnTraining = null;
 let lastDddWasRight = false;
 let dddStreakCount = 0;
 let statusPieChartInstance = null;
@@ -3064,9 +3081,7 @@ async function refreshMetadata() {
 
         updateStatsWortartenDropdown();
 
-        if (typeof initGameInstantly === 'function') {
-            initGameInstantly();
-        }
+        populateGameSetupForm();
     } catch (err) {
         console.error('Fehler beim Aktualisieren der Metadaten', err);
     }
@@ -3185,15 +3200,20 @@ function updateDailyTrackerUI() {
     }
 }
 
-function switchView(viewName) {
+function switchView(viewName, opts = {}) {
+    editReturnTraining = null;
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
     if (viewName === 'dashboard') {
         document.getElementById('dashboard-view').classList.add('active');
-        loadDashboardData(true);
-        refreshMetadata();
+        if (!opts.skipLoad) {
+            loadDashboardData(true);
+            refreshMetadata();
+        }
     } else if (viewName === 'game') {
         document.getElementById('game-view').classList.add('active');
-        refreshMetadata().then(() => initGameInstantly());
+        // Settings render at once from the cached metadata; the refresh runs in the background
+        initGameInstantly();
+        refreshMetadata();
     } else if (viewName === 'statistics') {
         document.getElementById('statistics-view').classList.add('active');
         refreshMetadata().then(() => loadStatisticsData());
@@ -3389,14 +3409,18 @@ function toggleSortOrder() {
     }
 }
 
-function initGameInstantly() {
+// Fills the training settings from the cached metadata, keeping what the user already selected
+function populateGameSetupForm() {
     const pillContainer = document.getElementById('statusPillContainer');
     if (pillContainer) {
+        const prevActive = pillContainer.children.length
+            ? new Set([...pillContainer.querySelectorAll('.status-pill.active')].map(p => p.getAttribute('data-value')))
+            : null;
         pillContainer.innerHTML = '';
         cachedStatuses.forEach(st => {
             const stLower = (st || '').toLowerCase().trim();
             // Make "wiederholen" the ONLY preselected option by default
-            const isPreselected = (stLower === 'wiederholen');
+            const isPreselected = prevActive ? prevActive.has(st) : (stLower === 'wiederholen');
             const activeClass = isPreselected ? 'active' : '';
             pillContainer.innerHTML += `<div class="status-pill ${activeClass}" data-value="${escapeAttr(st)}" onclick="toggleStatusPill(this)">${escapeHtml(st)}</div>`;
         });
@@ -3405,9 +3429,11 @@ function initGameInstantly() {
 
     const listContainer = document.getElementById('gameListCheckboxes');
     if (listContainer) {
+        const prevChecked = new Set([...listContainer.querySelectorAll('input:checked')].map(i => i.value));
         listContainer.innerHTML = '';
         cachedLists.forEach(l => {
-            listContainer.innerHTML += `<label class="checkbox-label"><input type="checkbox" name="sharepoint_lists[]" value="${escapeAttr(l)}"> ${escapeHtml(l)}</label>`;
+            const checked = prevChecked.has(l) ? ' checked' : '';
+            listContainer.innerHTML += `<label class="checkbox-label"><input type="checkbox" name="sharepoint_lists[]" value="${escapeAttr(l)}"${checked}> ${escapeHtml(l)}</label>`;
         });
     }
 
@@ -3426,29 +3452,31 @@ function initGameInstantly() {
 
     updateGameCategoriesCheckboxes();
     onGameModeChange();
+}
 
+function initGameInstantly() {
+    populateGameSetupForm();
     if (!activeGameSettings) {
         showGameSetup();
     } else {
-        document.getElementById('gameSetupCard').style.display = 'none';
-        if (activeGameSettings.mode === 'der_die_das') {
-            document.getElementById('gamePlayCard').style.display = 'none';
-            document.getElementById('deutschMeisterPlayCard').style.display = 'none';
-            document.getElementById('derDieDasPlayCard').style.display = 'block';
-
-            dddStreakCount = 0;
-            updateDddStreakUI();
-        } else if (activeGameSettings.mode === 'deutsch_meister') {
-            document.getElementById('gamePlayCard').style.display = 'none';
-            document.getElementById('derDieDasPlayCard').style.display = 'none';
-            document.getElementById('deutschMeisterPlayCard').style.display = 'block';
-            fetchNextDeutschMeisterWord();
-        } else {
-            document.getElementById('derDieDasPlayCard').style.display = 'none';
-            document.getElementById('deutschMeisterPlayCard').style.display = 'none';
-            document.getElementById('gamePlayCard').style.display = 'block';
-        }
+        showGameCard(gameCardForMode(activeGameSettings.mode));
     }
+}
+
+const GAME_CARD_IDS = ['gameSetupCard', 'gamePlayCard', 'derDieDasPlayCard', 'deutschMeisterPlayCard'];
+
+// Shows exactly one card of the training view ('trainingLoader' shows the loading animation)
+function showGameCard(cardId) {
+    GAME_CARD_IDS.forEach(id => {
+        document.getElementById(id).style.display = (id === cardId) ? 'block' : 'none';
+    });
+    document.getElementById('trainingLoader').classList.toggle('active', cardId === 'trainingLoader');
+}
+
+function gameCardForMode(mode) {
+    if (mode === 'der_die_das') return 'derDieDasPlayCard';
+    if (mode === 'deutsch_meister') return 'deutschMeisterPlayCard';
+    return 'gamePlayCard';
 }
 
 function onGameModeChange() {
@@ -3476,9 +3504,11 @@ function updateGameCategoriesCheckboxes() {
         availableWortarten = cachedWortarten;
     }
 
+    const prevChecked = new Set([...catContainer.querySelectorAll('input:checked')].map(i => i.value));
     catContainer.innerHTML = '';
     availableWortarten.forEach(wa => {
-        catContainer.innerHTML += `<label class="checkbox-label"><input type="checkbox" name="categories[]" value="${escapeAttr(wa)}"> ${escapeHtml(wa)}</label>`;
+        const checked = prevChecked.has(wa) ? ' checked' : '';
+        catContainer.innerHTML += `<label class="checkbox-label"><input type="checkbox" name="categories[]" value="${escapeAttr(wa)}"${checked}> ${escapeHtml(wa)}</label>`;
     });
 }
 
@@ -3488,13 +3518,10 @@ function onGameThemaChange() {
 
 function showGameSetup() {
     activeGameSettings = null;
-    document.getElementById('gameSetupCard').style.display = 'block';
-    document.getElementById('gamePlayCard').style.display = 'none';
-    document.getElementById('derDieDasPlayCard').style.display = 'none';
-    document.getElementById('deutschMeisterPlayCard').style.display = 'none';
+    showGameCard('gameSetupCard');
 }
 
-function startGameSession(e) {
+async function startGameSession(e) {
     e.preventDefault();
     const form = document.getElementById('gameSetupForm');
     const formData = new FormData(form);
@@ -3514,31 +3541,23 @@ function startGameSession(e) {
         sort_order: sortOrder
     };
 
-    if (mode === 'der_die_das') {
-        activeGameSettings = { mode: 'der_die_das', ...filterSettings };
+    const settings = { mode: (mode === 'der_die_das' || mode === 'deutsch_meister') ? mode : 'standard', ...filterSettings };
+    activeGameSettings = settings;
+    // Show the loading animation instead of the previous word until the first word is there
+    showGameCard('trainingLoader');
+    window.scrollTo({ top: 0 });
+
+    if (settings.mode === 'der_die_das') {
         dddStreakCount = 0;
         updateDddStreakUI();
-        document.getElementById('gameSetupCard').style.display = 'none';
-        document.getElementById('gamePlayCard').style.display = 'none';
-        document.getElementById('deutschMeisterPlayCard').style.display = 'none';
-        document.getElementById('derDieDasPlayCard').style.display = 'block';
-        fetchNextDerDieDasWord();
-    } else if (mode === 'deutsch_meister') {
-        activeGameSettings = { mode: 'deutsch_meister', ...filterSettings };
-        document.getElementById('gameSetupCard').style.display = 'none';
-        document.getElementById('gamePlayCard').style.display = 'none';
-        document.getElementById('derDieDasPlayCard').style.display = 'none';
-        document.getElementById('deutschMeisterPlayCard').style.display = 'block';
-        fetchNextDeutschMeisterWord();
+        await fetchNextDerDieDasWord();
+    } else if (settings.mode === 'deutsch_meister') {
+        await fetchNextDeutschMeisterWord();
     } else {
-        activeGameSettings = { mode: 'standard', ...filterSettings };
-
-        document.getElementById('gameSetupCard').style.display = 'none';
-        document.getElementById('derDieDasPlayCard').style.display = 'none';
-        document.getElementById('deutschMeisterPlayCard').style.display = 'none';
-        document.getElementById('gamePlayCard').style.display = 'block';
-        fetchNextGameWord();
+        await fetchNextGameWord();
     }
+    // Only if the user did not leave or restart in the meantime
+    if (activeGameSettings === settings) showGameCard(gameCardForMode(settings.mode));
 }
 
 // --- Deutsch Meister Logic ---
@@ -3732,8 +3751,7 @@ async function fetchNextDerDieDasWord() {
 
 function openEditFromDdd() {
     if (!currentDerDieDasWord) return;
-    switchView('dashboard');
-    editWord(currentDerDieDasWord);
+    openEditFromTraining(currentDerDieDasWord, 'derDieDasPlayCard');
 }
 
 async function deleteWordFromDdd() {
@@ -3910,12 +3928,11 @@ function toggleStoryTransTable(btn) {
 async function trainSpecificWord(wort) {
     document.getElementById('themaModalOverlay').style.display = 'none';
     switchView('game');
-    activeGameSettings = { mode: 'standard', specific_word: wort };
-    document.getElementById('gameSetupCard').style.display = 'none';
-    document.getElementById('derDieDasPlayCard').style.display = 'none';
-    document.getElementById('deutschMeisterPlayCard').style.display = 'none';
-    document.getElementById('gamePlayCard').style.display = 'block';
+    const settings = { mode: 'standard', specific_word: wort };
+    activeGameSettings = settings;
+    showGameCard('trainingLoader');
     await fetchNextGameWord();
+    if (activeGameSettings === settings) showGameCard('gamePlayCard');
 }
 
 async function fetchNextGameWord() {
@@ -3950,75 +3967,81 @@ async function fetchNextGameWord() {
             return;
         }
 
-        document.getElementById('gameMetaInfo').innerHTML = `Liste: <strong>${escapeHtml(currentGameWord.sharepoint_list || 'N/A')}</strong> | Thema: <strong>${escapeHtml(currentGameWord.Thema || 'N/A')}</strong> | Status: <strong>${escapeHtml(currentGameWord.Status)}</strong> | Score: <strong>${escapeHtml(currentGameWord.Score)}</strong>`;
-
-        const wordDisplay = document.getElementById('gameWordDisplay');
-        wordDisplay.textContent = currentGameWord.Wort;
-        wordDisplay.className = `word-display ${getArticleColorClass(currentGameWord.Artikel)}`;
-
-        const conjDisplay = document.getElementById('gameConjugationDisplay');
-        if (currentGameWord.VerbFlag == 1 && currentGameWord.Konjugation) {
-            conjDisplay.textContent = `${currentGameWord.Konjugation}`;
-            conjDisplay.style.display = 'block';
-        } else {
-            conjDisplay.style.display = 'none';
-        }
-
-        const praepDisplay = document.getElementById('gamePraepositionDisplay');
-        if (currentGameWord.VerbFlag == 1 && currentGameWord.praeposition_kollokation) {
-            // escaped first, then **bold** is converted safely
-            praepDisplay.innerHTML = `Kollokation: ${parseMarkdown(currentGameWord.praeposition_kollokation)}`;
-            praepDisplay.style.display = 'block';
-        } else {
-            praepDisplay.style.display = 'none';
-        }
-
-        const pluralDisplay = document.getElementById('gamePluralDisplay');
-        if (currentGameWord.VerbFlag != 1 && currentGameWord.Plural) {
-            pluralDisplay.textContent = `${currentGameWord.Plural}`;
-            pluralDisplay.style.display = 'block';
-        } else {
-            pluralDisplay.style.display = 'none';
-        }
-
-        const promoteContainer = document.getElementById('directPromoteContainer');
-        const currentStatusLower = (currentGameWord.Status || '').toLowerCase().trim();
-        if (currentStatusLower === 'aktiva') {
-            promoteContainer.style.display = 'none';
-        } else {
-            promoteContainer.style.display = '';
-        }
-
-        document.getElementById('gTrans').textContent = currentGameWord.Übersetzung;
-        document.getElementById('gSyn').textContent = currentGameWord.synonym || '-';
-        document.getElementById('gThema').textContent = currentGameWord.Thema || '-';
-        document.getElementById('gArt').textContent = currentGameWord.Artikel || 'Keiner';
-        document.getElementById('gPlural').textContent = currentGameWord.Plural || '-';
-        document.getElementById('gGrundverb').textContent = currentGameWord.grundverb || '-';
-        document.getElementById('gPraefix').textContent = currentGameWord.praefix || '-';
-        document.getElementById('gPraeposition').textContent = currentGameWord.praeposition_kollokation || '-';
-        const gIsVerbWord = (currentGameWord.VerbFlag == 1);
-        ['gGrundverbRow', 'gPraefixRow', 'gPraepositionRow'].forEach(id => {
-            document.getElementById(id).style.display = gIsVerbWord ? '' : 'none';
-        });
-        ['gArtRow', 'gPluralRow'].forEach(id => {
-            document.getElementById(id).style.display = gIsVerbWord ? 'none' : '';
-        });
-        document.getElementById('gWart').textContent = currentGameWord.Wortarten;
-        document.getElementById('gIsVerb').textContent = (currentGameWord.VerbFlag == 1) ? 'Ja' : 'Nein';
-        document.getElementById('gEx').textContent = currentGameWord.Beispiel;
-        document.getElementById('gDates').textContent = `Erstellt: ${currentGameWord.Created || '-'} | Geändert: ${currentGameWord.Modified || '-'} | Nächste Übung: ${currentGameWord.NachsteUbungDatum || '-'}`;
-
-        document.getElementById('userSentenceInput').value = '';
-        document.getElementById('aiCorrectionResult').style.display = 'none';
-        document.getElementById('sentenceWriterContainer').style.display = 'none';
-        document.getElementById('toggleSentenceWriterBtn').textContent = 'Mit KI trainieren';
-
-        document.getElementById('detailsBox').style.display = 'none';
-        document.getElementById('revealBtn').innerHTML = 'Übersetzung anzeigen';
+        renderGameWord(true);
     } catch (err) {
         console.error('Fehler beim Laden des nächsten Vokabelworts', err);
     }
+}
+
+// Fills the standard training card with currentGameWord; resetUi closes the details and the KI box
+function renderGameWord(resetUi) {
+    document.getElementById('gameMetaInfo').innerHTML = `Liste: <strong>${escapeHtml(currentGameWord.sharepoint_list || 'N/A')}</strong> | Thema: <strong>${escapeHtml(currentGameWord.Thema || 'N/A')}</strong> | Status: <strong>${escapeHtml(currentGameWord.Status)}</strong> | Score: <strong>${escapeHtml(currentGameWord.Score)}</strong>`;
+
+    const wordDisplay = document.getElementById('gameWordDisplay');
+    wordDisplay.textContent = currentGameWord.Wort;
+    wordDisplay.className = `word-display ${getArticleColorClass(currentGameWord.Artikel)}`;
+
+    const conjDisplay = document.getElementById('gameConjugationDisplay');
+    if (currentGameWord.VerbFlag == 1 && currentGameWord.Konjugation) {
+        conjDisplay.textContent = `${currentGameWord.Konjugation}`;
+        conjDisplay.style.display = 'block';
+    } else {
+        conjDisplay.style.display = 'none';
+    }
+
+    const praepDisplay = document.getElementById('gamePraepositionDisplay');
+    if (currentGameWord.VerbFlag == 1 && currentGameWord.praeposition_kollokation) {
+        // escaped first, then **bold** is converted safely
+        praepDisplay.innerHTML = `Kollokation: ${parseMarkdown(currentGameWord.praeposition_kollokation)}`;
+        praepDisplay.style.display = 'block';
+    } else {
+        praepDisplay.style.display = 'none';
+    }
+
+    const pluralDisplay = document.getElementById('gamePluralDisplay');
+    if (currentGameWord.VerbFlag != 1 && currentGameWord.Plural) {
+        pluralDisplay.textContent = `${currentGameWord.Plural}`;
+        pluralDisplay.style.display = 'block';
+    } else {
+        pluralDisplay.style.display = 'none';
+    }
+
+    const promoteContainer = document.getElementById('directPromoteContainer');
+    const currentStatusLower = (currentGameWord.Status || '').toLowerCase().trim();
+    if (currentStatusLower === 'aktiva') {
+        promoteContainer.style.display = 'none';
+    } else {
+        promoteContainer.style.display = '';
+    }
+
+    document.getElementById('gTrans').textContent = currentGameWord.Übersetzung;
+    document.getElementById('gSyn').textContent = currentGameWord.synonym || '-';
+    document.getElementById('gThema').textContent = currentGameWord.Thema || '-';
+    document.getElementById('gArt').textContent = currentGameWord.Artikel || 'Keiner';
+    document.getElementById('gPlural').textContent = currentGameWord.Plural || '-';
+    document.getElementById('gGrundverb').textContent = currentGameWord.grundverb || '-';
+    document.getElementById('gPraefix').textContent = currentGameWord.praefix || '-';
+    document.getElementById('gPraeposition').textContent = currentGameWord.praeposition_kollokation || '-';
+    const gIsVerbWord = (currentGameWord.VerbFlag == 1);
+    ['gGrundverbRow', 'gPraefixRow', 'gPraepositionRow'].forEach(id => {
+        document.getElementById(id).style.display = gIsVerbWord ? '' : 'none';
+    });
+    ['gArtRow', 'gPluralRow'].forEach(id => {
+        document.getElementById(id).style.display = gIsVerbWord ? 'none' : '';
+    });
+    document.getElementById('gWart').textContent = currentGameWord.Wortarten;
+    document.getElementById('gIsVerb').textContent = (currentGameWord.VerbFlag == 1) ? 'Ja' : 'Nein';
+    document.getElementById('gEx').textContent = currentGameWord.Beispiel;
+    document.getElementById('gDates').textContent = `Erstellt: ${currentGameWord.Created || '-'} | Geändert: ${currentGameWord.Modified || '-'} | Nächste Übung: ${currentGameWord.NachsteUbungDatum || '-'}`;
+
+    if (!resetUi) return;
+    document.getElementById('userSentenceInput').value = '';
+    document.getElementById('aiCorrectionResult').style.display = 'none';
+    document.getElementById('sentenceWriterContainer').style.display = 'none';
+    document.getElementById('toggleSentenceWriterBtn').textContent = 'Mit KI trainieren';
+
+    document.getElementById('detailsBox').style.display = 'none';
+    document.getElementById('revealBtn').innerHTML = 'Übersetzung anzeigen';
 }
 
 async function directPromoteCurrentWord() {
@@ -4288,8 +4311,46 @@ async function inlinePromoteWord(wort, btn) {
 
 function openEditFromGame() {
     if (!currentGameWord) return;
-    switchView('dashboard');
-    editWord(currentGameWord);
+    openEditFromTraining(currentGameWord, 'gamePlayCard');
+}
+
+function openEditFromTraining(word, cardId) {
+    switchView('dashboard', { skipLoad: true });
+    editReturnTraining = cardId;
+    editWord(word);
+}
+
+// Back to the training exactly where it was, without loading a new word
+function returnToTraining() {
+    const cardId = editReturnTraining;
+    editReturnTraining = null;
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    document.getElementById('game-view').classList.add('active');
+    showGameCard(cardId);
+    window.scrollTo({ top: 0 });
+}
+
+function cancelWordForm() {
+    const backToTraining = !!editReturnTraining;
+    resetForm();
+    if (backToTraining) returnToTraining();
+}
+
+// Shows the saved changes on the word that is being trained
+function applyEditToTrainingWord(formData) {
+    const fields = ['sharepoint_list', 'Thema', 'Wort', 'Artikel', 'Plural', 'Übersetzung', 'synonym', 'Wortarten', 'VerbFlag', 'Konjugation', 'grundverb', 'praefix', 'praeposition_kollokation', 'Beispiel'];
+    const changes = {};
+    fields.forEach(f => { changes[f] = (formData[f] ?? '').trim(); });
+    if (changes.VerbFlag === '1') changes.Plural = ''; else { changes.grundverb = ''; changes.praefix = ''; changes.praeposition_kollokation = ''; }
+
+    if (editReturnTraining === 'gamePlayCard' && currentGameWord) {
+        Object.assign(currentGameWord, changes);
+        renderGameWord(false);
+    } else if (editReturnTraining === 'derDieDasPlayCard' && currentDerDieDasWord) {
+        Object.assign(currentDerDieDasWord, changes);
+        const wordDisplay = document.getElementById('dddWordDisplay');
+        if (wordDisplay.textContent !== 'Lade...') wordDisplay.textContent = currentDerDieDasWord.Wort;
+    }
 }
 
 async function deleteWordFromGame() {
@@ -4537,6 +4598,7 @@ function resetFilters() {
 }
 
 function openAddForm() {
+    editReturnTraining = null;
     resetForm();
     document.getElementById('formContainer').classList.add('active');
     document.getElementById('formToggleBar').style.display = 'none';
@@ -4699,6 +4761,14 @@ async function submitWordForm(e) {
         showAlert(result.message);
         todayReviewedCount++;
         updateDailyTrackerUI();
+        if (editReturnTraining) {
+            // Edited from a training: go straight back to it, the lists refresh in the background
+            applyEditToTrainingWord(formData);
+            resetForm();
+            returnToTraining();
+            refreshMetadata();
+            return;
+        }
         resetForm();
         await refreshMetadata();
         loadDashboardData(true);
