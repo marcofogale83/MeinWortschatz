@@ -1122,7 +1122,7 @@ try {
     <title>vokabiq</title>
 
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@800&text=vokabiq&display=swap">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@800&text=vokabiqABCDEFGHIJKLMNOPQRSTUVWXYZ%C3%84%C3%96%C3%9C&display=swap">
 
     <meta name="theme-color" content="#1e88e5">
     <meta name="mobile-web-app-capable" content="yes">
@@ -1171,8 +1171,9 @@ try {
             --md-subtle-hover: rgba(255,255,255,0.03);
             --md-th-bg: #242424;
             --md-track: #333333;
-            --md-avatar-bg: #3a3a3a;
-            --md-avatar-text: #d6d6d6;
+            --md-avatar-bg: linear-gradient(140deg, #ff5c93 0%, #ef2b6f 55%, #c8175a 100%);
+            --md-avatar-text: #ffffff;
+            --md-avatar-ring: rgba(239,43,111,0.45);
             --md-logout-text: #ff8a80;
             --md-logout-hover: #3b2424;
             --md-der: #64b5f6;
@@ -1189,9 +1190,9 @@ try {
         /* ===== Light theme ===== */
         :root[data-theme="light"] {
             --md-primary-light: #e3f2fd;
-            --md-bg: #f4f6f8;
-            --md-surface: #ffffff;
-            --md-surface-card: #f8f9fb;
+            --md-bg: #e9ecef;
+            --md-surface: #f2f4f6;
+            --md-surface-card: #eceff2;
             --md-on-surface: #1f2933;
             --md-text-muted: #5f6b7a;
             --md-border: #dde2e8;
@@ -1201,18 +1202,19 @@ try {
 
             --md-accent-text: #1565c0;
             --md-on-accent: #ffffff;
-            --md-control-bg: #f1f4f7;
+            --md-control-bg: #e8ebee;
             --md-control-hover: #e6ebf0;
             --md-control-border: #d0d7de;
             --md-control-border-hover: #b8c1cb;
-            --md-popover-bg: #ffffff;
+            --md-popover-bg: #f5f6f8;
             --md-menu-hover: #eef1f5;
             --md-hover-bg: #eef3f9;
             --md-subtle-hover: rgba(0,0,0,0.04);
-            --md-th-bg: #eef1f5;
+            --md-th-bg: #e4e8ec;
             --md-track: #e3e7ec;
-            --md-avatar-bg: #d6eaff;
-            --md-avatar-text: #1565c0;
+            --md-avatar-bg: linear-gradient(140deg, #ff5c93 0%, #ef2b6f 55%, #c8175a 100%);
+            --md-avatar-text: #ffffff;
+            --md-avatar-ring: rgba(239,43,111,0.35);
             --md-logout-text: #c62828;
             --md-logout-hover: #fdecea;
             --md-der: #1976d2;
@@ -1243,16 +1245,18 @@ try {
         .account-menu { position: relative; }
         .account-trigger {
             display: inline-flex; align-items: center; justify-content: center; gap: 0;
-            width: 36px; height: 36px; padding: 0; border: 1px solid var(--md-control-border); border-radius: 50%;
-            background: var(--md-control-bg); color: var(--md-on-surface); cursor: pointer; list-style: none;
+            width: 38px; height: 38px; padding: 0; border: 0; border-radius: 50%;
+            background: transparent; color: var(--md-on-surface); cursor: pointer; list-style: none;
             font: inherit; font-size: 0.9rem; font-weight: 600;
         }
         .account-trigger::-webkit-details-marker { display: none; }
-        .account-trigger:hover, .account-menu[open] .account-trigger { background: var(--md-control-hover); border-color: var(--md-control-border-hover); }
+        .account-trigger:hover .account-avatar, .account-menu[open] .account-avatar { box-shadow: 0 0 0 3px var(--md-avatar-ring), 0 2px 6px rgba(239,43,111,0.35); transform: scale(1.04); }
         .account-trigger:focus-visible, .account-menu-item:focus-visible { outline: 2px solid var(--md-accent-text); outline-offset: 2px; }
         .account-avatar {
-            display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
-            background: var(--md-avatar-bg); color: var(--md-avatar-text); font-size: 0.85rem;
+            display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%;
+            background: var(--md-avatar-bg); color: var(--md-avatar-text); font-size: 1.05rem; line-height: 1;
+            font-family: "Nunito", "Arial Rounded MT Bold", system-ui, sans-serif; font-weight: 800;
+            box-shadow: 0 1px 3px rgba(239,43,111,0.30); transition: box-shadow 0.15s, transform 0.15s;
         }
         /* label stays readable for screen readers, chevron hidden: icon-only Konto button */
         .account-trigger .account-label {
@@ -1300,7 +1304,6 @@ try {
         .wordmark { font-family: "Nunito", "Arial Rounded MT Bold", system-ui, sans-serif; font-weight: 800; letter-spacing: -0.02em; color: #d3d7de; }
         .wordmark span { color: #ef2b6f; }
         :root[data-theme="light"] .wordmark { color: #2b3445; }
-        :root[data-theme="light"] #dashboard-view header { background: #eceef1; }
         .brand-logo { width: 1.6em; height: 1.6em; border-radius: 22%; flex-shrink: 0; }
         h1 { font-size: 1.5rem; font-weight: 500; margin: 0; color: var(--md-accent-text); display: flex; align-items: center; gap: 8px; }
         h2 { font-size: 1.15rem; font-weight: 500; margin: 0 0 1rem 0; color: var(--md-on-surface); }
@@ -1966,7 +1969,7 @@ try {
             <div class="header-actions">
                 <details class="account-menu sheet-menu" id="accountMenu">
                     <summary class="account-trigger" title="Konto">
-                        <span class="account-avatar" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7z"/></svg></span>
+                        <span class="account-avatar" aria-hidden="true"><?= htmlspecialchars(mb_strtoupper(mb_substr(trim((string)(($_SESSION['display_name'] ?? '') ?: ($_SESSION['username'] ?? ''))) ?: 'V', 0, 1, 'UTF-8'), 'UTF-8'), ENT_QUOTES, 'UTF-8') ?></span>
                         <span class="account-label">Konto</span>
                         <span class="account-chevron" aria-hidden="true"></span>
                     </summary>

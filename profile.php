@@ -122,9 +122,9 @@ function e(string $s): string {
 
         /* ===== Light theme ===== */
         :root[data-theme="light"] {
-            --bg: #f4f6f8;
-            --surface: #ffffff;
-            --surface-raised: #f8f9fb;
+            --bg: #e9ecef;
+            --surface: #f2f4f6;
+            --surface-raised: #eceff2;
             --text: #1f2933;
             --muted: #5f6b7a;
             --border: #dde2e8;
