@@ -2004,6 +2004,38 @@ try {
         :root[data-theme="light"] .lp-node.done .lp-dot, :root[data-theme="light"] .lp-node.current .lp-dot { fill: #f8d7e3; }
         :root[data-theme="light"] .lp-track { stroke: #9aa3ad; }
         :root[data-theme="light"] .lp-node.current .lp-name { fill: var(--md-aktiva-green); }
+        /* Light theme: buttons are soft tints of their colour instead of solid fills */
+        :root[data-theme="light"] .btn { --tone: var(--md-primary); }
+        :root[data-theme="light"] .btn-success, :root[data-theme="light"] .form-toggle-bar .btn:nth-child(2) { --tone: #7e57c2; }
+        :root[data-theme="light"] .btn-info { --tone: #0097a7; }
+        :root[data-theme="light"] .btn-aktiva, :root[data-theme="light"] .form-toggle-bar .btn:nth-child(1) { --tone: var(--md-aktiva-green); }
+        :root[data-theme="light"] .form-toggle-bar .btn:nth-child(3) { --tone: #3f7fd6; }
+        :root[data-theme="light"] .btn-danger { --tone: #c23a52; }
+        :root[data-theme="light"] .btn-passiv, :root[data-theme="light"] .btn-secondary { --tone: #556173; }
+        :root[data-theme="light"] .setup-start-btn { --tone: #b4498f; }
+        :root[data-theme="light"] .btn, :root[data-theme="light"] .form-toggle-bar .btn:nth-child(n) {
+            background: color-mix(in srgb, var(--tone) 19%, var(--md-surface));
+            color: color-mix(in srgb, var(--tone) 82%, #000);
+            border: 1px solid color-mix(in srgb, var(--tone) 32%, transparent);
+            box-shadow: none;
+        }
+        :root[data-theme="light"] .btn:hover, :root[data-theme="light"] .form-toggle-bar .btn:nth-child(n):hover {
+            background: color-mix(in srgb, var(--tone) 29%, var(--md-surface));
+            box-shadow: none;
+        }
+        :root[data-theme="light"] .btn .btn-ico { background: color-mix(in srgb, var(--tone) 22%, transparent); }
+        :root[data-theme="light"] .rate-btn {
+            background: color-mix(in srgb, var(--c) 17%, var(--md-surface));
+            color: color-mix(in srgb, var(--c) 85%, #000);
+        }
+        :root[data-theme="light"] .rate-btn:hover { background: color-mix(in srgb, var(--c) 28%, var(--md-surface)); }
+        :root[data-theme="light"] .rate-btn:focus-visible { outline-color: var(--c); }
+        :root[data-theme="light"] .rate-group.is-picker .rate-btn.is-selected { box-shadow: inset 0 0 0 3px var(--c); }
+        :root[data-theme="light"] #gameSetupCard .status-pill.active {
+            background: color-mix(in srgb, var(--md-aktiva-green) 18%, var(--md-surface));
+            color: var(--md-aktiva-green-dark); box-shadow: none;
+        }
+        :root[data-theme="light"] .mode-tile.active { box-shadow: none; }
         .lp-img { pointer-events: none; }
         .lp-node.next .lp-img, .lp-node.locked .lp-img { filter: grayscale(1); opacity: 0.35; }
         .lp-node.done, .lp-node.current { cursor: pointer; }
