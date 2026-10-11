@@ -30,6 +30,29 @@ require_once 'theme.php';
 $uid = (int)($_SESSION['user_id'] ?? 0);
 $isLoggedIn = !empty($_SESSION['logged_in']) && $uid > 0;
 
+// --- SUBSCRIPTION PLAN: free (no AI), ai (text AI), ai_full (text AI + image generation) ---
+// Read on every request so a plan change applies at once. Unknown or missing values count as free.
+$subscription = 'free';
+if ($isLoggedIn) {
+    try {
+        $planStmt = $pdo->prepare("SELECT subscription FROM users WHERE id = ? LIMIT 1");
+        $planStmt->execute([$uid]);
+        $planValue = (string)$planStmt->fetchColumn();
+        if (in_array($planValue, ['free', 'ai', 'ai_full'], true)) {
+            $subscription = $planValue;
+        }
+    } catch (Throwable $e) {
+        error_log('Subscription lookup failed: ' . $e->getMessage());
+    }
+}
+
+// 'llm' = text AI (fill word, sentence checks, Deutsch Meister), 'image' = image generation
+function planAllows(string $plan, string $feature): bool {
+    if ($feature === 'llm') return $plan === 'ai' || $plan === 'ai_full';
+    if ($feature === 'image') return $plan === 'ai_full';
+    return true;
+}
+
 // --- CONFIGURATION: API keys come from config.php (never hardcode them here) ---
 define('GEMINI_API_KEY', $config['gemini_api_key'] ?? '');
 define('RAPIDAPI_KEY', $config['rapidapi_key'] ?? '');
@@ -378,6 +401,27 @@ if (isset($_GET['api'])) {
     }
 
     session_write_close();
+
+    // Plan gate: AI endpoints refuse requests the user's plan does not include
+    $planFeatureByAction = [
+        'ai_fill_word' => 'llm',
+        'deutsch_meister_next' => 'llm',
+        'deutsch_meister_check_sentence' => 'llm',
+        'der_die_das_check_sentence' => 'llm',
+        'check_sentence_booster' => 'llm',
+        'generate_ai_image' => 'image',
+    ];
+    if (isset($planFeatureByAction[$action]) && !planAllows($subscription, $planFeatureByAction[$action])) {
+        http_response_code(403);
+        echo json_encode([
+            'success' => false,
+            'upgrade_required' => true,
+            'error' => $planFeatureByAction[$action] === 'image'
+                ? 'Die Bildgenerierung ist nur im Abo „KI Plus“ enthalten.'
+                : 'KI-Funktionen sind ab dem Abo „KI“ verfügbar.'
+        ]);
+        exit;
+    }
 
     if ($action === 'generate_ai_image') {
         $input = jsonInput();
@@ -1276,6 +1320,7 @@ try {
         .account-menu[open] .account-chevron { margin-top: 4px; transform: rotate(225deg); }
         .account-menu-identity { padding: 9px 10px 12px; border-bottom: 1px solid var(--md-border); }
         .account-menu-caption { display: block; margin-bottom: 4px; color: var(--md-text-muted); font-size: 0.75rem; }
+        .account-menu-plan { display: block; margin-top: 4px; color: var(--md-text-muted); font-size: 0.75rem; }
         .account-menu-identity strong { display: block; overflow: hidden; color: var(--md-on-surface); font-size: 0.9rem; text-overflow: ellipsis; }
         .account-menu-item {
             display: flex; align-items: center; min-height: 42px; margin-top: 5px; padding: 0 10px;
@@ -1726,6 +1771,11 @@ try {
         .mode-tile.active { border-color: var(--md-aktiva-green); background: rgba(236,64,122,0.10); box-shadow: 0 2px 10px rgba(236,64,122,0.22); }
         .mode-tile.active .mode-ico { background: var(--md-aktiva-green); color: #fff; }
         @media (max-width: 480px) { .mode-tile { font-size: 0.8rem; padding: 12px 4px; } }
+        /* Features not included in the user's plan: visible but locked */
+        .plan-locked { opacity: 0.55; }
+        .plan-locked::after { content: ' 🔒'; }
+        .mode-tile.plan-locked { position: relative; }
+        .mode-tile.plan-locked::after { position: absolute; top: 6px; right: 8px; font-size: 0.8rem; }
         #gameSetupCard .settings-fieldset { border-radius: 12px; }
         #gameSetupCard .settings-summary { color: var(--md-on-surface); font-weight: 700; }
         #gameSetupCard .settings-summary::after {
@@ -1908,6 +1958,9 @@ try {
         .training-loader-dots span:nth-child(3) { animation-delay: 0.3s; }
         @keyframes training-bounce { 0%, 80%, 100% { transform: scale(0.5); opacity: 0.4; } 40% { transform: scale(1); opacity: 1; } }
         @media (prefers-reduced-motion: reduce) { .training-loader-dots span { animation: none; opacity: 0.8; } }
+        /* back on the main page: short loader, then the fresh list fades in */
+        #tableResponsiveContainer.is-refreshing { display: none; }
+        #tableResponsiveContainer.fade-in { animation: sheet-fade 0.3s ease-out; }
 
         /* Filter sheet content */
         .filter-group { padding: 4px 0 14px; border-bottom: 1px solid var(--md-border); margin-bottom: 12px; }
@@ -2125,6 +2178,7 @@ try {
                         <div class="account-menu-identity">
                             <span class="account-menu-caption">Angemeldet als</span>
                             <strong><?= htmlspecialchars((string)(($_SESSION['display_name'] ?? '') ?: ($_SESSION['username'] ?? 'Benutzer')), ENT_QUOTES, 'UTF-8') ?></strong>
+                            <span class="account-menu-plan">Abo: <?= htmlspecialchars(['free' => 'Gratis', 'ai' => 'KI', 'ai_full' => 'KI Plus'][$subscription] ?? 'Gratis', ENT_QUOTES, 'UTF-8') ?></span>
                         </div>
                         <a class="account-menu-item" href="profil"><span class="menu-ico"><img class="menu-brain" id="menuLevelBrain" alt=""></span>Mein Profil<span class="menu-lvl" id="menuLevelName"></span></a>
                         <a class="account-menu-item" href="community"><span class="menu-ico menu-brains" id="menuCommunityBrains"><img alt=""><img alt=""><img alt=""></span>Community</a>
@@ -2398,6 +2452,10 @@ try {
                 </div>
             </form>
 
+            <div id="listLoader" class="training-loader" role="status" aria-live="polite">
+                <div class="training-loader-dots" aria-hidden="true"><span></span><span></span><span></span></div>
+                <span>Wörter werden geladen…</span>
+            </div>
             <div class="table-responsive" id="tableResponsiveContainer">
                 <table>
                     <thead>
@@ -2817,6 +2875,47 @@ let cachedPraefixe = <?= jsonForScript($initialPraefixe) ?>;
 let cachedStatuses = <?= jsonForScript($initialStatuses) ?>;
 let cachedThemaWortartenMap = <?= jsonForScript($initialThemaWortartenMap) ?>;
 
+// Subscription plan: which AI features this user may use (the server enforces the same rules)
+const PLAN = <?= jsonForScript(['name' => $subscription, 'llm' => planAllows($subscription, 'llm'), 'image' => planAllows($subscription, 'image')]) ?>;
+const PLAN_UPGRADE_HINT = {
+    llm: 'KI-Funktionen sind ab dem Abo „KI“ verfügbar. Upgrade, um sie freizuschalten.',
+    image: 'Die Bildgenerierung ist nur im Abo „KI Plus“ enthalten. Upgrade, um sie freizuschalten.'
+};
+
+// Shows the upgrade hint and returns true when the feature is not in the user's plan
+function planLocked(feature) {
+    if (PLAN[feature]) return false;
+    alert(PLAN_UPGRADE_HINT[feature]);
+    return true;
+}
+
+// Marks the AI controls the plan does not include, so users see what an upgrade unlocks
+function applyPlanLocks() {
+    const lockedIds = { llm: ['aiFillBtn', 'toggleSentenceWriterBtn', 'dddToggleSentenceBtn'], image: ['editImageBtn', 'generateImageBtn'] };
+    Object.keys(lockedIds).forEach(feature => {
+        if (PLAN[feature]) return;
+        lockedIds[feature].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.classList.add('plan-locked');
+                el.title = PLAN_UPGRADE_HINT[feature];
+            }
+        });
+    });
+    if (!PLAN.llm) {
+        const tile = document.querySelector('.mode-tile[data-mode="deutsch_meister"]');
+        if (tile) {
+            tile.classList.add('plan-locked');
+            tile.title = PLAN_UPGRADE_HINT.llm;
+        }
+        const opt = document.querySelector('#gameModeSelect option[value="deutsch_meister"]');
+        if (opt) opt.disabled = true;
+        const hint = document.querySelector('.word-hero-hint');
+        if (hint) hint.textContent = 'KI-Ausfüllen ist ab dem Abo „KI“ verfügbar. Fülle die Felder unten selbst aus.';
+    }
+}
+applyPlanLocks();
+
 let todayReviewedCount = <?= (int)$todayReviewedCount ?>;
 let lastPopupWordObject = null;
 const dailyTarget = 100;
@@ -2882,6 +2981,7 @@ function closeFullscreenImage() {
 }
 
 async function generateAiImageForCurrentWord() {
+    if (planLocked('image')) return;
     if (!currentGameWord || !currentGameWord.Wort) {
         alert('Kein aktives Wort gefunden.');
         return;
@@ -3011,6 +3111,7 @@ async function loadEditImage(word) {
 }
 
 async function generateAiImageForEditWord() {
+    if (planLocked('image')) return;
     // the image is stored on the saved word, so use the original name (not unsaved edits)
     const word = document.getElementById('original_wort').value;
     if (!word) {
@@ -3074,6 +3175,7 @@ async function generateAiImageForEditWord() {
 }
 
 async function fillWordWithAI() {
+    if (planLocked('llm')) return;
     const wortInput = document.getElementById('Wort');
     const wordValue = wortInput.value.trim();
 
@@ -3449,10 +3551,7 @@ function switchView(viewName, opts = {}) {
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
     if (viewName === 'dashboard') {
         document.getElementById('dashboard-view').classList.add('active');
-        if (!opts.skipLoad) {
-            loadDashboardData(true);
-            refreshMetadata();
-        }
+        if (!opts.skipLoad) refreshDashboardSmoothly();
     } else if (viewName === 'game') {
         document.getElementById('game-view').classList.add('active');
         // Settings render at once from the cached metadata; the refresh runs in the background
@@ -3467,6 +3566,21 @@ function switchView(viewName, opts = {}) {
             }
         }, 50);
     }
+}
+
+// Coming back to the main page: show a short loader instead of the old list jumping to the new one
+async function refreshDashboardSmoothly() {
+    const table = document.getElementById('tableResponsiveContainer');
+    const loader = document.getElementById('listLoader');
+    table.classList.remove('fade-in');
+    table.classList.add('is-refreshing');
+    loader.classList.add('active');
+    window.scrollTo({ top: 0 });
+    await Promise.all([loadDashboardData(true), refreshMetadata(), new Promise(r => setTimeout(r, 250))]);
+    loader.classList.remove('active');
+    table.classList.remove('is-refreshing');
+    void table.offsetWidth; // restart the fade
+    table.classList.add('fade-in');
 }
 
 function openGameSelection() {
@@ -3761,6 +3875,7 @@ function onGameThemaChange() {
 }
 
 function pickGameMode(tile) {
+    if (tile.dataset.mode === 'deutsch_meister' && planLocked('llm')) return;
     const sel = document.getElementById('gameModeSelect');
     sel.value = tile.dataset.mode;
     syncGameModeTiles();
@@ -3785,6 +3900,7 @@ async function startGameSession(e) {
     const form = document.getElementById('gameSetupForm');
     const formData = new FormData(form);
     const mode = formData.get('game_mode') || 'standard';
+    if (mode === 'deutsch_meister' && planLocked('llm')) return;
     const sortOrder = formData.get('sort_order') || 'ASC';
     const selectedThema = document.getElementById('gameThemaSelect').value;
     let themenList = [];
@@ -4103,6 +4219,7 @@ function loadNextDerDieDasWord() {
 }
 
 function toggleDddSentenceWriter() {
+    if (planLocked('llm')) return;
     const box = document.getElementById('dddSentenceWriterBox');
     const btn = document.getElementById('dddToggleSentenceBtn');
     if (box.style.display === 'none') {
@@ -4402,6 +4519,7 @@ function toggleGameDetails() {
 }
 
 function toggleSentenceWriter() {
+    if (planLocked('llm')) return;
     const container = document.getElementById('sentenceWriterContainer');
     const btn = document.getElementById('toggleSentenceWriterBtn');
     if (container.style.display === 'none') {
@@ -4967,7 +5085,7 @@ function handleWortKeydown(event) {
     if (event.key !== 'Enter') return;
     if (document.getElementById('original_wort').value) return; // editing: keep normal submit
     event.preventDefault();
-    if (!document.getElementById('aiFillBtn').disabled) fillWordWithAI();
+    if (PLAN.llm && !document.getElementById('aiFillBtn').disabled) fillWordWithAI();
 }
 
 function toggleVerbFields() {

@@ -9,20 +9,30 @@ session_set_cookie_params([
 ]);
 session_start();
 
-// Runs once at every login (password and Google) for the user who just logged in.
+// Runs at login (password and Google), at most once per day per user (users.last_word_refresh).
 // Sends forgotten words back to "wiederholen" (Score 1, the same as the "wiederholen" rating):
-//   1. every "aktiva" word not modified for a year
-//   2. about 1 login in 3: one random "aktiva" word picked from the 100 modified longest ago
-// Modified is set to now, so the same words aren't picked again at the next login.
+//   1. one "aktiva" word not modified for a year (the oldest)
+//   2. about 1 day in 3: one random "aktiva" word picked from the 100 modified longest ago
+// Modified is set to now, so the same words aren't picked again next time.
 // Never blocks the login: errors are only logged.
 function refreshWordsOnLogin(PDO $pdo, int $uid): void {
     try {
         $pdo->beginTransaction();
 
+        // Claim today's run; a second login on the same day changes no row and stops here
+        $claim = $pdo->prepare("UPDATE users SET last_word_refresh = CURDATE()
+                                WHERE id = ? AND (last_word_refresh IS NULL OR last_word_refresh < CURDATE())");
+        $claim->execute([$uid]);
+        if ($claim->rowCount() === 0) {
+            $pdo->commit();
+            return;
+        }
+
         $pdo->prepare("UPDATE meine_wortschatz
                        SET Score = 1, Status = 'wiederholen', Modified = NOW(), NachsteUbungDatum = NOW()
                        WHERE user_id = ? AND Status = 'aktiva'
-                         AND (Modified IS NULL OR Modified < DATE_SUB(NOW(), INTERVAL 1 YEAR))")
+                         AND (Modified IS NULL OR Modified < DATE_SUB(NOW(), INTERVAL 1 YEAR))
+                       ORDER BY Modified ASC LIMIT 1")
             ->execute([$uid]);
 
         if (random_int(1, 3) === 1) {

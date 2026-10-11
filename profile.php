@@ -84,6 +84,20 @@ $email = (string)($user['email'] ?? '');
 $displayName = (string)($user['display_name'] ?? '');
 $hasGoogle = !empty($user['google_sub']);
 
+// Subscription plan (separate query so the profile still loads before the column exists)
+$planLabels = ['free' => 'Gratis (ohne KI)', 'ai' => 'KI (ohne Bildgenerierung)', 'ai_full' => 'KI Plus (mit Bildgenerierung)'];
+$subscription = 'free';
+try {
+    $planStmt = $pdo->prepare('SELECT subscription FROM users WHERE id = ? LIMIT 1');
+    $planStmt->execute([$uid]);
+    $planValue = (string)$planStmt->fetchColumn();
+    if (isset($planLabels[$planValue])) {
+        $subscription = $planValue;
+    }
+} catch (Throwable $e) {
+    error_log('Subscription lookup failed: ' . $e->getMessage());
+}
+
 // Level brain for the title: same levels as on the main page
 $levelNames = ['Novize', 'Praktiker', 'Fortgeschrittener', 'Experte', 'Kenner', 'Spezialist', 'Meister', 'Virtuose'];
 $levelMins = [500, 1300, 2500, 4000, 6000, 8000, 10000, 15000];
@@ -322,6 +336,7 @@ function e(string $s): string {
                 <span>Anmeldung</span>
                 <strong><?= $isGoogleOnly ? 'Google' : ($hasGoogle ? 'Passwort und Google' : 'Passwort') ?></strong>
             </div>
+            <div class="account-row"><span>Abo</span><strong><?= e($planLabels[$subscription]) ?></strong></div>
         </div>
 
         <?php if ($isGoogleOnly): ?>
