@@ -395,7 +395,7 @@ if (isset($_GET['api'])) {
             exit;
         }
 
-        $prompt = "Create a clear, detailed, and illustrative visual scene explaining the German vocabulary word '$word' (Translation: '$translation', Theme: '$thema'). High quality, educational, professional photography or clear illustration style.";
+        $prompt = "Create a single clear image that shows only the core meaning of the German vocabulary word '$word' (Translation: '$translation', Theme: '$thema'). Depict just the main concept, with no extra objects or busy background. The image must contain absolutely NO text: no words, letters, numbers, captions, labels, signs or watermarks. High quality, educational, professional photography or clear illustration style.";
 
         $payload = [
             'contents' => [
@@ -670,7 +670,9 @@ if (isset($_GET['api'])) {
             $stmt = $pdo->prepare("UPDATE meine_wortschatz SET sharepoint_list = ?, Thema = ?, Wort = ?, Artikel = ?, Plural = ?, Übersetzung = ?, synonym = ?, Wortarten = ?, Beispiel = ?, Score = ?, Status = ?, VerbFlag = ?, Konjugation = ?, grundverb = ?, praefix = ?, praeposition_kollokation = ?, Modified = NOW() WHERE Wort = ? AND user_id = ?");
             $stmt->execute([$sharepointList, $thema, $wort, $artikel, $plural, $uebersetzung, $synonym, $wortarten, $beispiel, $score, $status, $verbFlag, $konjugation, $grundverb, $praefix, $praeposition_kollokation, $originalWort, $uid]);
             if ($kenntnisse !== '') saveWordScore($pdo, $uid, $wort, scoreAfterRating($score, $kenntnisse));
-            echo json_encode(['success' => true, 'message' => "Wort '$wort' erfolgreich aktualisiert!"]);
+            $saved = userQuery($pdo, "SELECT " . WORD_COLS . " FROM meine_wortschatz WHERE user_id = ? AND Wort = ?", [$uid, $wort])->fetch(PDO::FETCH_ASSOC) ?: null;
+            if ($saved) normalizeVerbFlag($saved);
+            echo json_encode(['success' => true, 'word' => $saved, 'message' => "Wort '$wort' erfolgreich aktualisiert!"]);
         } else {
             $stmt = $pdo->prepare("INSERT INTO meine_wortschatz (user_id, sharepoint_list, Thema, Wort, Artikel, Plural, Übersetzung, synonym, Wortarten, Beispiel, Score, Status, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation, Created, Modified, NachsteUbungDatum) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())");
             $stmt->execute([$uid, $sharepointList, $thema, $wort, $artikel, $plural, $uebersetzung, $synonym, $wortarten, $beispiel, $score, $status, $verbFlag, $konjugation, $grundverb, $praefix, $praeposition_kollokation]);
@@ -705,8 +707,8 @@ if (isset($_GET['api'])) {
         $input = jsonInput();
         $wortToPromote = trim($input['Wort'] ?? '');
         if (!empty($wortToPromote)) {
-            saveWordScore($pdo, $uid, $wortToPromote, 10);
-            echo json_encode(['success' => true, 'message' => "Wort '$wortToPromote' direkt zu 'aktiva' (Score 10) befördert!"]);
+            $newStatus = saveWordScore($pdo, $uid, $wortToPromote, 10);
+            echo json_encode(['success' => true, 'score' => 10, 'status' => $newStatus, 'message' => "Wort '$wortToPromote' direkt zu 'aktiva' (Score 10) befördert!"]);
         } else {
             echo json_encode(['success' => false, 'message' => 'Ungültiges Wort.']);
         }
@@ -727,7 +729,7 @@ if (isset($_GET['api'])) {
                     "  \"thema\": \"Passendes Thema\",\n" .
                     "  \"kategorie\": \"Wortart / Unterkategorie (z.B. Nomen, Verb, Adjektiv)\",\n" .
                     "  \"ist_verb\": true/false,\n" .
-                    "  \"konjugation\": \"Nur wenn Verb: z.B. er läuft, lief, ist gelaufen (sonst leer)\",\n" .
+                    "  \"konjugation\": \"Nur wenn Verb: IMMER nur die 3. Person Singular in Präsens, Präteritum und Perfekt, genau in diesem Format: 'er läuft, lief, ist gelaufen' (keine anderen Personen oder Zeiten; sonst leer)\",\n" .
                     "  \"grundverb\": \"Nur wenn Verb: das unpräfigierte Grundverb sofern vorhanden, z.B. bei 'interessieren' oder 'sich interessieren' -> 'interessieren' (sonst leer)\",\n" .
                     "  \"praefix\": \"Nur wenn Verb: das Verbpräfix sofern vorhanden, z.B. bei 'aufstehen' -> 'auf' (sonst leer)\",\n" .
                     "  \"praeposition_kollokation\": \"Nur wenn Verb: Präpositionalkollokation mit fett markierter Präposition oder Beispielspräposition, z.B. 'sich interessieren **für**' oder 'warten **auf**' (sonst leer)\",\n" .
@@ -1039,7 +1041,9 @@ if (isset($_GET['api'])) {
             if ($row) {
                 $newScore = scoreAfterRating((int)$row['Score'], $result === 'direkt_aktiv' ? '' : $result);
 
-                saveWordScore($pdo, $uid, $wort, $newScore);
+                $newStatus = saveWordScore($pdo, $uid, $wort, $newScore);
+                echo json_encode(['success' => true, 'score' => $newScore, 'status' => $newStatus]);
+                exit;
             }
         }
         echo json_encode(['success' => true]);
@@ -1053,7 +1057,7 @@ if (isset($_GET['api'])) {
 
 // Ensure login check for page render
 if (!$isLoggedIn) {
-    header('Location: login.php');
+    header('Location: login');
     exit;
 }
 
@@ -1502,6 +1506,11 @@ try {
         .rate-btn.r-passiv { --c: #6b7785; }
         .rate-btn.r-warteschlange { --c: #434b57; }
         .rate-group.is-saving { opacity: 0.5; pointer-events: none; }
+        /* main word list: rows change in place instead of the whole list reloading */
+        #wordTableBody tr { transition: opacity 0.25s ease, transform 0.25s ease; }
+        #wordTableBody tr.row-removing { opacity: 0; transform: translateX(24px); pointer-events: none; }
+        #wordTableBody tr.row-updated { animation: row-flash 1.2s ease-out; }
+        @keyframes row-flash { from { background-color: rgba(102, 187, 106, 0.28); } }
         /* word form: the bar works as a choice; once one is picked, the others fade */
         .rate-group.is-picker { margin-bottom: 4px; }
         .rate-group.is-picker.has-choice .rate-btn:not(.is-selected) { opacity: 0.35; }
@@ -1691,6 +1700,57 @@ try {
             font-weight: 600;
         }
 
+        /* Training settings in the vokabiq style */
+        #gameSetupCard .setup-title { display: flex; align-items: center; font-size: 1.3rem; font-weight: 700; margin-bottom: 1.2rem; }
+        #gameSetupCard .setup-label { font-size: 0.8rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--md-text-muted); margin-bottom: 8px; }
+        .mode-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 1.2rem; }
+        .mode-tile {
+            display: flex; flex-direction: column; align-items: center; gap: 8px;
+            padding: 14px 8px; border-radius: 12px; cursor: pointer;
+            background: var(--md-surface-card); border: 1.5px solid var(--md-border);
+            color: var(--md-on-surface); font: inherit; font-weight: 600; font-size: 0.92rem;
+            transition: border-color 0.2s, background 0.2s, box-shadow 0.2s, transform 0.15s;
+        }
+        .mode-tile:hover { border-color: var(--md-aktiva-green); transform: translateY(-1px); }
+        .mode-ico { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; background: rgba(236,64,122,0.13); color: var(--md-aktiva-green); transition: background 0.2s, color 0.2s; }
+        .mode-ico svg { width: 22px; height: 22px; }
+        .mode-tile.active { border-color: var(--md-aktiva-green); background: rgba(236,64,122,0.10); box-shadow: 0 2px 10px rgba(236,64,122,0.22); }
+        .mode-tile.active .mode-ico { background: var(--md-aktiva-green); color: #fff; }
+        @media (max-width: 480px) { .mode-tile { font-size: 0.8rem; padding: 12px 4px; } }
+        #gameSetupCard .settings-fieldset { border-radius: 12px; }
+        #gameSetupCard .settings-summary { color: var(--md-on-surface); font-weight: 700; }
+        #gameSetupCard .settings-summary::after {
+            content: ''; width: 9px; height: 9px; margin: 0 4px 0 10px; flex-shrink: 0;
+            border-right: 2px solid var(--md-aktiva-green); border-bottom: 2px solid var(--md-aktiva-green);
+            transform: rotate(45deg) translateY(-3px);
+        }
+        #gameSetupCard details[open] > .settings-summary::after { transform: rotate(225deg) translateY(-3px); }
+        #gameSetupCard #statusSelectionGroup > .settings-summary::after { display: none; }
+        #gameSetupCard .settings-summary::-webkit-details-marker { display: none; }
+        #gameSetupCard summary.settings-summary { list-style: none; }
+        #gameSetupCard .settings-controls-bar { align-items: center; }
+        #gameSetupCard .settings-controls-bar > span { display: none; }
+        #gameSetupCard .settings-action-link {
+            text-decoration: none; color: var(--md-text-muted); font-weight: 600; font-size: 0.78rem;
+            padding: 4px 12px; border-radius: 999px; border: 1px solid var(--md-border); background: var(--md-surface);
+        }
+        #gameSetupCard .settings-action-link:hover { color: var(--md-aktiva-green); border-color: var(--md-aktiva-green); }
+        #gameSetupCard .status-pill:hover { border-color: var(--md-aktiva-green); }
+        #gameSetupCard .status-pill.active { background: var(--md-aktiva-green); border-color: var(--md-aktiva-green); box-shadow: 0 2px 8px rgba(236,64,122,0.35); }
+        #gameSetupCard .checkbox-label input[type="checkbox"] { accent-color: var(--md-aktiva-green); }
+        #gameSetupCard .toggle-switch-btn { background: var(--md-surface-card); box-shadow: none; border-radius: 10px; }
+        #gameSetupCard .toggle-switch-btn:hover { border-color: var(--md-aktiva-green); }
+        #gameSetupCard .toggle-switch-badge { background: var(--md-aktiva-green); border-radius: 999px; padding: 4px 12px; }
+        #gameSetupCard form select:focus, #gameSetupCard form input:focus { border-color: var(--md-aktiva-green); box-shadow: 0 0 0 3px rgba(236,64,122,0.22); }
+        .setup-start-btn {
+            width: 100%; margin-top: 1rem; padding: 12px; font-size: 1.05rem; font-weight: 700;
+            display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+            background: linear-gradient(135deg, #7e57c2, var(--md-aktiva-green)); border-radius: 12px;
+        }
+        .setup-start-btn:hover { background: linear-gradient(135deg, #6a45ad, var(--md-aktiva-green-dark)); }
+        .setup-start-btn .btn-ico svg { width: 16px; height: 16px; margin-left: 2px; }
+        .setup-change-btn { font-size: 0.85rem; padding: 8px 14px; display: inline-flex; align-items: center; gap: 8px; }
+        .setup-change-btn svg { width: 16px; height: 16px; }
         .word-display { font-size: 2.7rem; font-weight: 700; margin: 1rem 0 0.3rem 0; text-align: center; }
         .details-box { background: var(--md-surface-card); border: 1px solid var(--md-border); border-radius: 8px; padding: 16px; margin-bottom: 1.5rem; }
         .details-box p { margin: 8px 0; font-size: 0.95rem; }
@@ -2023,10 +2083,10 @@ try {
                             <span class="account-menu-caption">Angemeldet als</span>
                             <strong><?= htmlspecialchars((string)(($_SESSION['display_name'] ?? '') ?: ($_SESSION['username'] ?? 'Benutzer')), ENT_QUOTES, 'UTF-8') ?></strong>
                         </div>
-                        <a class="account-menu-item" href="profile.php">👤 Mein Profil</a>
-                        <a class="account-menu-item" href="community.php">👥 Community</a>
-                        <a class="account-menu-item" href="index.php?api=export_csv">📥 CSV exportieren</a>
-                        <a class="account-menu-item account-menu-logout" href="logout.php">↪ Abmelden</a>
+                        <a class="account-menu-item" href="profil">👤 Mein Profil</a>
+                        <a class="account-menu-item" href="community">👥 Community</a>
+                        <a class="account-menu-item" href="./?api=export_csv">📥 CSV exportieren</a>
+                        <a class="account-menu-item account-menu-logout" href="logout">↪ Abmelden</a>
                         </div>
                     </div>
                 </details>
@@ -2076,8 +2136,8 @@ try {
                     </div>
 
                     <div class="form-group-section">
-                        <label for="sharepoint_list">SharePoint-Liste</label>
-                        <input type="text" id="sharepoint_list" name="sharepoint_list" placeholder="z.B., Listenname">
+                        <label for="sharepoint_list">Persönliche Liste</label>
+                        <input type="text" id="sharepoint_list" name="sharepoint_list" placeholder="z.B., Reisen, Arbeit, Prüfung">
 
                         <label for="Thema">Thema</label>
                         <input type="text" id="Thema" name="Thema" placeholder="z.B., Wirtschaft, Alltag">
@@ -2095,7 +2155,7 @@ try {
 
                         <div id="verbFieldsContainer" style="display: none;">
                             <label for="Konjugation">Konjugation</label>
-                            <input type="text" id="Konjugation" name="Konjugation" placeholder="z.B., du läufst, er lief, ist gelaufen">
+                            <input type="text" id="Konjugation" name="Konjugation" placeholder="z.B. er läuft, lief, ist gelaufen">
 
                             <label for="grundverb">Grundverb</label>
                             <input type="text" id="grundverb" name="grundverb" placeholder="z.B., interessieren">
@@ -2206,7 +2266,7 @@ try {
                                 <h3 class="filter-group-title">🗂️ Kategorien</h3>
                                 <div class="filter-grid">
                                 <label class="filter-field">
-                                    <span>Liste</span>
+                                    <span>Persönliche Liste</span>
                                     <select id="filterList" name="sharepoint_list" onchange="loadDashboardData(true)">
                                         <option value="">Alle Listen</option>
                                         <?php foreach ($initialLists as $l): ?>
@@ -2369,10 +2429,15 @@ try {
             </div>
 
             <div id="gameSetupCard" class="card">
-                <h2>Trainingseinstellungen</h2>
+                <h2 class="setup-title"><span class="h-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>Trainingseinstellungen</h2>
                 <form id="gameSetupForm" onsubmit="startGameSession(event)">
-                    <label for="gameModeSelect">Trainingsmodus auswählen:</label>
-                    <select id="gameModeSelect" name="game_mode" style="margin-bottom: 1.2rem;" onchange="onGameModeChange()">
+                    <div class="setup-label">Trainingsmodus</div>
+                    <div class="mode-tiles" role="radiogroup" aria-label="Trainingsmodus">
+                        <button type="button" class="mode-tile active" data-mode="standard" role="radio" aria-checked="true" onclick="pickGameMode(this)"><span class="mode-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="14" height="15" rx="2"/><path d="M7 3h12a2 2 0 0 1 2 2v12"/></svg></span><span>Karteikarten</span></button>
+                        <button type="button" class="mode-tile" data-mode="der_die_das" role="radio" aria-checked="false" onclick="pickGameMode(this)"><span class="mode-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h10M4 17h6"/><circle cx="18" cy="17" r="3"/></svg></span><span>Der-Die-Das</span></button>
+                        <button type="button" class="mode-tile" data-mode="deutsch_meister" role="radio" aria-checked="false" onclick="pickGameMode(this)"><span class="mode-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l4.5 4L12 4l4.5 7L21 7l-2 12H5z"/></svg></span><span>Deutsch Meister</span></button>
+                    </div>
+                    <select id="gameModeSelect" name="game_mode" hidden onchange="onGameModeChange()">
                         <option value="standard">Karteikarten</option>
                         <option value="der_die_das">Der-Die-Das Training</option>
                         <option value="deutsch_meister">Deutsch Meister</option>
@@ -2395,7 +2460,7 @@ try {
                     <!-- Hidden Advanced Settings Accordion -->
                     <div class="settings-fieldset" style="margin-bottom: 1.2rem;">
                         <details id="advancedSettingsDetails">
-                            <summary class="settings-summary">Erweiterte Einstellungen (Advanced Settings)</summary>
+                            <summary class="settings-summary">Erweiterte Einstellungen</summary>
                             <div class="settings-content">
                                 <div style="margin-bottom: 1.2rem;">
                                     <label style="margin-bottom: 6px;">Sortierreihenfolge (Top-N):</label>
@@ -2409,7 +2474,7 @@ try {
                                 <div id="standardGameOptions">
                                     <div class="settings-fieldset" style="margin-bottom: 12px;">
                                         <details>
-                                            <summary class="settings-summary">SharePoint-Listen auswählen (Optional)</summary>
+                                            <summary class="settings-summary">Persönliche Listen auswählen (Optional)</summary>
                                             <div class="settings-content">
                                                 <div class="settings-controls-bar">
                                                     <button type="button" class="settings-action-link" onclick="toggleAllCheckboxes('gameListCheckboxes', true)">Alle auswählen</button>
@@ -2447,7 +2512,7 @@ try {
                     </div>
 
 
-                    <button type="submit" class="btn" style="width: 100%; margin-top: 1rem; padding: 14px; font-size: 1rem;">Mit dem Üben beginnen 🚀</button>
+                    <button type="submit" class="btn setup-start-btn"><span class="btn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg></span>Mit dem Üben beginnen</button>
                 </form>
             </div>
 
@@ -2512,7 +2577,7 @@ try {
 
 
                     <div style="display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 1.5rem; border-top: 1px solid var(--md-border); padding-top: 1rem;">
-                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Trainingseinstellungen ändern</button>
+                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary setup-change-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Trainingseinstellungen ändern</button>
                         <div class="rate-group action-group is-inline" role="group" aria-label="Wort-Aktionen"><button type="button" class="rate-btn a-edit" onclick="openEditFromGame()" title="Bearbeiten"><span class="rate-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg></span><span>Bear&shy;beiten</span></button><button type="button" class="rate-btn a-delete" onclick="deleteWordFromGame()" title="Löschen"><span class="rate-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M10 11v5M14 11v5"/></svg></span><span>Löschen</span></button></div>
                     </div>
                 </div>
@@ -2551,7 +2616,7 @@ try {
                     </div>
 
                     <div style="text-align: center; border-top: 1px solid var(--md-border); padding-top: 1rem; margin-top: 1.5rem;">
-                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Trainingseinstellungen ändern</button>
+                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary setup-change-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Trainingseinstellungen ändern</button>
                     </div>
                 </div>
             </div>
@@ -2597,7 +2662,7 @@ try {
                     </div>
 
                     <div style="text-align: center; border-top: 1px solid var(--md-border); padding-top: 1rem; margin-top: 1.5rem;">
-                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px 14px;">⚙️ Trainingseinstellungen ändern</button>
+                        <button type="button" onclick="showGameSetup()" class="btn btn-secondary setup-change-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Trainingseinstellungen ändern</button>
                     </div>
                 </div>
             </div>
@@ -2699,6 +2764,7 @@ let dddStreakCount = 0;
 let statusPieChartInstance = null;
 
 let masterWordsList = <?= jsonForScript($initialWords) ?>;
+let editFromListWort = null; // word being edited from the main list, redrawn in place after saving
 let cachedLists = <?= jsonForScript($initialLists) ?>;
 let cachedThemen = <?= jsonForScript($initialThemen) ?>;
 let cachedWortarten = <?= jsonForScript($initialWortarten) ?>;
@@ -2805,7 +2871,7 @@ async function generateAiImageForCurrentWord() {
         }
 
         if (data.error === 'Unauthorized') {
-            window.location.href = 'login.php';
+            window.location.href = 'login';
             return;
         }
 
@@ -2936,7 +3002,7 @@ async function generateAiImageForEditWord() {
         }
 
         if (data.error === 'Unauthorized') {
-            window.location.href = 'login.php';
+            window.location.href = 'login';
             return;
         }
 
@@ -2989,7 +3055,7 @@ async function fillWordWithAI() {
         const data = await res.json();
 
         if (data.error === 'Unauthorized') {
-            window.location.href = 'login.php';
+            window.location.href = 'login';
             return;
         }
 
@@ -3174,7 +3240,7 @@ async function refreshMetadata() {
         const res = await fetch('index.php?api=get_metadata&_ts=' + Date.now(), { cache: 'no-store' });
         const data = await res.json();
         if (data.error === 'Unauthorized') {
-            window.location.href = 'login.php';
+            window.location.href = 'login';
             return;
         }
         if (!data.success) return;
@@ -3364,7 +3430,7 @@ async function loadStatisticsData() {
     try {
         const res = await fetch(url, { cache: 'no-store' });
         const data = await res.json();
-        if (data.error === 'Unauthorized') { window.location.href = 'login.php'; return; }
+        if (data.error === 'Unauthorized') { window.location.href = 'login'; return; }
 
         renderStatistics(data.stats);
     } catch (err) {
@@ -3639,8 +3705,23 @@ function onGameThemaChange() {
     updateGameCategoriesCheckboxes();
 }
 
+function pickGameMode(tile) {
+    const sel = document.getElementById('gameModeSelect');
+    sel.value = tile.dataset.mode;
+    syncGameModeTiles();
+    onGameModeChange();
+}
+function syncGameModeTiles() {
+    const mode = document.getElementById('gameModeSelect').value;
+    document.querySelectorAll('.mode-tile').forEach(t => {
+        const on = t.dataset.mode === mode;
+        t.classList.toggle('active', on);
+        t.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+}
 function showGameSetup() {
     activeGameSettings = null;
+    syncGameModeTiles();
     showGameCard('gameSetupCard');
 }
 
@@ -3705,7 +3786,7 @@ async function fetchNextDeutschMeisterWord() {
         const data = await res.json();
 
         if (data.error === 'Unauthorized') {
-            window.location.href = 'login.php';
+            window.location.href = 'login';
             return;
         }
 
@@ -3746,7 +3827,7 @@ async function checkDeutschMeisterSentence() {
         const data = await res.json();
 
         if (data.error === 'Unauthorized') {
-            window.location.href = 'login.php';
+            window.location.href = 'login';
             return;
         }
 
@@ -3855,7 +3936,7 @@ async function fetchNextDerDieDasWord() {
         const data = await res.json();
 
         if (data.error === 'Unauthorized') {
-            window.location.href = 'login.php';
+            window.location.href = 'login';
             return;
         }
 
@@ -3889,7 +3970,7 @@ async function deleteWordFromDdd() {
     });
     const result = await res.json();
     if (result.error === 'Unauthorized') {
-        window.location.href = 'login.php';
+        window.location.href = 'login';
         return;
     }
     if (result.success) {
@@ -3917,7 +3998,7 @@ async function submitDerDieDasAnswer(guessedArtikel) {
         const data = await res.json();
 
         if (data.error === 'Unauthorized') {
-            window.location.href = 'login.php';
+            window.location.href = 'login';
             return;
         }
 
@@ -4003,7 +4084,7 @@ async function checkDddSentence() {
         const data = await res.json();
 
         if (data.error === 'Unauthorized') {
-            window.location.href = 'login.php';
+            window.location.href = 'login';
             return;
         }
 
@@ -4070,7 +4151,7 @@ async function fetchNextGameWord() {
         const data = await res.json();
 
         if (data.error === 'Unauthorized') {
-            window.location.href = 'login.php';
+            window.location.href = 'login';
             return;
         }
 
@@ -4167,7 +4248,7 @@ async function directPromoteCurrentWord() {
     });
     const result = await res.json();
     if (result.error === 'Unauthorized') {
-        window.location.href = 'login.php';
+        window.location.href = 'login';
         return;
     }
     if (result.success) {
@@ -4194,7 +4275,7 @@ async function directPromoteFromPopup(wort) {
     });
     const result = await res.json();
     if (result.error === 'Unauthorized') {
-        window.location.href = 'login.php';
+        window.location.href = 'login';
         return;
     }
     if (result.success) {
@@ -4235,7 +4316,7 @@ async function deleteWordFromPopup(wort) {
     });
     const result = await res.json();
     if (result.error === 'Unauthorized') {
-        window.location.href = 'login.php';
+        window.location.href = 'login';
         return;
     }
     if (result.success) {
@@ -4308,7 +4389,7 @@ async function checkStandardSentenceBooster() {
         const data = await res.json();
 
         if (data.error === 'Unauthorized') {
-            window.location.href = 'login.php';
+            window.location.href = 'login';
             return;
         }
 
@@ -4349,7 +4430,7 @@ async function submitGameAnswer(result) {
     });
     const data = await res.json();
     if (data.error === 'Unauthorized') {
-        window.location.href = 'login.php';
+        window.location.href = 'login';
         return;
     }
 
@@ -4377,15 +4458,15 @@ async function inlineRateWord(wort, result, btn) {
         });
         const data = await res.json();
         if (data.error === 'Unauthorized') {
-            window.location.href = 'login.php';
+            window.location.href = 'login';
             return;
         }
 
         todayReviewedCount++;
         updateDailyTrackerUI();
         showAlert(`Wort '${wort}' aktualisiert.`);
-        await refreshMetadata();
-        loadDashboardData(true);
+        refreshMetadata();
+        if (!data.status || !updateWordInList(wort, { Score: data.score, Status: data.status })) loadDashboardData(true);
     } catch (err) {
         console.error('Fehler beim Aktualisieren des Wortstatus', err);
         if (group) group.classList.remove('is-saving');
@@ -4404,15 +4485,15 @@ async function inlinePromoteWord(wort, btn) {
         });
         const result = await res.json();
         if (result.error === 'Unauthorized') {
-            window.location.href = 'login.php';
+            window.location.href = 'login';
             return;
         }
         if (result.success) {
             todayReviewedCount++;
             updateDailyTrackerUI();
             showAlert(result.message || `Wort '${wort}' ist jetzt aktiv.`);
-            await refreshMetadata();
-            loadDashboardData(true);
+            refreshMetadata();
+            if (!result.status || !updateWordInList(wort, { Score: result.score, Status: result.status })) loadDashboardData(true);
         } else if (group) {
             group.classList.remove('is-saving');
         }
@@ -4478,7 +4559,7 @@ async function deleteWordFromGame() {
     });
     const result = await res.json();
     if (result.error === 'Unauthorized') {
-        window.location.href = 'login.php';
+        window.location.href = 'login';
         return;
     }
     if (result.success) {
@@ -4603,7 +4684,7 @@ async function loadDashboardData(reset = false) {
     try {
         const res = await fetch(url, { cache: 'no-store' });
         const data = await res.json();
-        if (data.error === 'Unauthorized') { window.location.href = 'login.php'; return; }
+        if (data.error === 'Unauthorized') { window.location.href = 'login'; return; }
 
         if (data.words.length < 50) {
             hasMoreData = false;
@@ -4657,26 +4738,90 @@ function renderTable(words) {
     }
 
     tbody.innerHTML = '';
-    words.forEach(row => {
-        const artClass = getArticleColorClass(row.Artikel);
-        const isVerb = (row.VerbFlag == 1);
+    words.forEach(row => tbody.appendChild(buildWordRow(row)));
+}
 
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td data-label="Artikel"><strong>${escapeHtml(row.Artikel || '')}</strong></td>
-            <td data-label="Wort" class="wort-cell ${artClass}">${escapeHtml(row.Wort || '')}</td>
-            <td data-label="Übersetzung">
-                <span class="story-word-trans" style="display: none; color: var(--md-accent-text);">${escapeHtml(row.Übersetzung || '')}</span>
-                <button type="button" class="btn btn-secondary" style="padding: 2px 6px; font-size: 0.75rem; margin-top: 4px;" onclick="toggleStoryTransTable(this)">Übersetzung anzeigen</button>
-            </td>
-            <td class="kenntnisse-cell" data-label="Kenntnisse">${rateGroupHtml(row.Wort, row.Status)}</td>
-            <td data-label="Status" class="status-cell" data-status="${escapeHtml((row.Status || '').toLowerCase().trim())}">${escapeHtml(row.Status || '')}</td>
-            <td class="aktion-cell" data-label="Aktion">
-                <div class="rate-group action-group" role="group" aria-label="Wort-Aktionen"><button type="button" class="rate-btn a-edit" onclick="editWord(${escapeAttr(JSON.stringify(row))})" title="Bearbeiten"><span class="rate-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg></span><span>Bear&shy;beiten</span></button><button type="button" class="rate-btn a-train" onclick="trainSpecificWord('${escapeJs(row.Wort)}')" title="Üben"><span class="rate-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg></span><span>Üben</span></button><button type="button" class="rate-btn a-delete" onclick="deleteWord('${escapeJs(row.Wort)}')" title="Löschen"><span class="rate-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M10 11v5M14 11v5"/></svg></span><span>Löschen</span></button></div>
-            </td>
-        `;
-        tbody.appendChild(tr);
-    });
+function buildWordRow(row) {
+    const artClass = getArticleColorClass(row.Artikel);
+
+    const tr = document.createElement('tr');
+    tr.dataset.wort = row.Wort || '';
+    tr.innerHTML = `
+        <td data-label="Artikel"><strong>${escapeHtml(row.Artikel || '')}</strong></td>
+        <td data-label="Wort" class="wort-cell ${artClass}">${escapeHtml(row.Wort || '')}</td>
+        <td data-label="Übersetzung">
+            <span class="story-word-trans" style="display: none; color: var(--md-accent-text);">${escapeHtml(row.Übersetzung || '')}</span>
+            <button type="button" class="btn btn-secondary" style="padding: 2px 6px; font-size: 0.75rem; margin-top: 4px;" onclick="toggleStoryTransTable(this)">Übersetzung anzeigen</button>
+        </td>
+        <td class="kenntnisse-cell" data-label="Kenntnisse">${rateGroupHtml(row.Wort, row.Status)}</td>
+        <td data-label="Status" class="status-cell" data-status="${escapeHtml((row.Status || '').toLowerCase().trim())}">${escapeHtml(row.Status || '')}</td>
+        <td class="aktion-cell" data-label="Aktion">
+            <div class="rate-group action-group" role="group" aria-label="Wort-Aktionen"><button type="button" class="rate-btn a-edit" onclick="editWordFromList('${escapeJs(row.Wort)}')" title="Bearbeiten"><span class="rate-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg></span><span>Bear&shy;beiten</span></button><button type="button" class="rate-btn a-train" onclick="trainSpecificWord('${escapeJs(row.Wort)}')" title="Üben"><span class="rate-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg></span><span>Üben</span></button><button type="button" class="rate-btn a-delete" onclick="deleteWord('${escapeJs(row.Wort)}')" title="Löschen"><span class="rate-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M10 11v5M14 11v5"/></svg></span><span>Löschen</span></button></div>
+        </td>
+    `;
+    return tr;
+}
+
+// --- Main word list: change one row in place instead of reloading the whole list ---
+function findWordRow(wort) {
+    return Array.from(document.getElementById('wordTableBody').rows)
+        .find(tr => tr.dataset.wort === wort && !tr.classList.contains('row-removing')) || null;
+}
+
+function flashWordRow(tr) {
+    tr.classList.remove('row-updated');
+    void tr.offsetWidth; // restart the animation
+    tr.classList.add('row-updated');
+}
+
+// With a status filter on, a word that left that status leaves the list
+function wordMatchesStatusFilter(word) {
+    const status = document.getElementById('filterStatus').value.toLowerCase().trim();
+    return !status || (word.Status || '').toLowerCase().trim() === status;
+}
+
+// Returns false when the word isn't shown, so the caller can fall back to a full reload
+function updateWordInList(wort, changes) {
+    const idx = masterWordsList.findIndex(w => w.Wort === wort);
+    const tr = findWordRow(wort);
+    if (idx < 0 || !tr) return false;
+    const word = Object.assign({}, masterWordsList[idx], changes);
+    if (!wordMatchesStatusFilter(word)) return removeWordFromList(wort);
+    masterWordsList[idx] = word;
+    const fresh = buildWordRow(word);
+    // keep an open translation open
+    const oldTrans = tr.querySelector('.story-word-trans');
+    if (oldTrans && oldTrans.style.display !== 'none') {
+        const t = fresh.querySelector('.story-word-trans');
+        const b = t.nextElementSibling;
+        t.style.display = oldTrans.style.display;
+        if (b) b.textContent = oldTrans.nextElementSibling.textContent;
+    }
+    tr.replaceWith(fresh);
+    flashWordRow(fresh);
+    return fresh;
+}
+
+function removeWordFromList(wort) {
+    const idx = masterWordsList.findIndex(w => w.Wort === wort);
+    const tr = findWordRow(wort);
+    if (idx < 0 || !tr) return false;
+    masterWordsList.splice(idx, 1);
+    currentOffset--; // the server list shifted by one, so the next page starts one word earlier
+    tr.classList.add('row-removing');
+    setTimeout(() => {
+        tr.remove();
+        if (masterWordsList.length === 0) renderTable(masterWordsList);
+    }, 260);
+    return true;
+}
+
+function editWordFromList(wort) {
+    const row = masterWordsList.find(w => w.Wort === wort);
+    if (!row) return;
+    editReturnTraining = null;
+    editFromListWort = wort;
+    editWord(row);
 }
 
 function setSort(column) {
@@ -4790,6 +4935,7 @@ function toggleVerbFields() {
 }
 
 function resetForm() {
+    editFromListWort = null;
     document.getElementById('wordForm').reset();
     document.getElementById('original_wort').value = '';
     formCurrentScore = 0;
@@ -4864,7 +5010,7 @@ async function submitWordForm(e) {
     });
     const result = await res.json();
     if (result.error === 'Unauthorized') {
-        window.location.href = 'login.php';
+        window.location.href = 'login';
         return;
     }
 
@@ -4880,9 +5026,15 @@ async function submitWordForm(e) {
             refreshMetadata();
             return;
         }
+        const listWort = editFromListWort;
         resetForm();
-        await refreshMetadata();
-        loadDashboardData(true);
+        refreshMetadata();
+        const row = (listWort && result.word) ? updateWordInList(listWort, result.word) : false;
+        if (row && row !== true) {
+            row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        } else if (!row) {
+            loadDashboardData(true);
+        }
     } else {
         alert(result.message || 'Fehler beim Speichern des Wortes.');
     }
@@ -4898,13 +5050,13 @@ async function deleteWord(wort) {
     });
     const result = await res.json();
     if (result.error === 'Unauthorized') {
-        window.location.href = 'login.php';
+        window.location.href = 'login';
         return;
     }
     if (result.success) {
         showAlert(result.message);
-        await refreshMetadata();
-        loadDashboardData(true);
+        refreshMetadata();
+        if (!removeWordFromList(wort)) loadDashboardData(true);
     }
 }
 

@@ -17,7 +17,7 @@ require_once 'theme.php';
 
 $uid = (int)($_SESSION['user_id'] ?? 0);
 if (empty($_SESSION['logged_in']) || $uid <= 0) {
-    header('Location: login.php');
+    header('Location: login');
     exit;
 }
 ?>
@@ -382,7 +382,7 @@ if (empty($_SESSION['logged_in']) || $uid <= 0) {
 <main class="container">
     <header>
         <div class="header-title">
-            <a class="back-icon" href="index.php" title="Zurück zum Wortschatz" aria-label="Zurück zum Wortschatz">
+            <a class="back-icon" href="./" title="Zurück zum Wortschatz" aria-label="Zurück zum Wortschatz">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
             </a>
             <h1><span class="h-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><circle cx="17" cy="9" r="2.8"/><path d="M16.5 14.2c2.9.3 5 2.4 5 5.8"/></svg></span>Community</h1>
@@ -500,7 +500,7 @@ async function api(action, body = null, params = '') {
         return { success: false, error: 'Keine Verbindung zum Server.', _status: 0 };
     }
     if (res.status === 401) {
-        location.href = 'login.php';
+        location.href = 'login';
         return { success: false, _status: 401 };
     }
     try {

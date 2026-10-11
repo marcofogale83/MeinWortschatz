@@ -9,9 +9,53 @@ session_set_cookie_params([
 ]);
 session_start();
 
+// Runs once at every login (password and Google) for the user who just logged in.
+// Sends forgotten words back to "wiederholen" (Score 1, the same as the "wiederholen" rating):
+//   1. every "aktiva" word not modified for a year
+//   2. about 1 login in 3: one random "aktiva" word picked from the 100 modified longest ago
+// Modified is set to now, so the same words aren't picked again at the next login.
+// Never blocks the login: errors are only logged.
+function refreshWordsOnLogin(PDO $pdo, int $uid): void {
+    try {
+        $pdo->beginTransaction();
+
+        $pdo->prepare("UPDATE meine_wortschatz
+                       SET Score = 1, Status = 'wiederholen', Modified = NOW(), NachsteUbungDatum = NOW()
+                       WHERE user_id = ? AND Status = 'aktiva'
+                         AND (Modified IS NULL OR Modified < DATE_SUB(NOW(), INTERVAL 1 YEAR))")
+            ->execute([$uid]);
+
+        if (random_int(1, 3) === 1) {
+            $stmt = $pdo->prepare("SELECT Wort FROM (SELECT Wort FROM meine_wortschatz
+                                                     WHERE user_id = ? AND Status = 'aktiva'
+                                                     ORDER BY Modified ASC LIMIT 100) AS oldest
+                                   ORDER BY RAND() LIMIT 1");
+            $stmt->execute([$uid]);
+            $wort = $stmt->fetchColumn();
+            if ($wort !== false) {
+                $pdo->prepare("UPDATE meine_wortschatz
+                               SET Score = 1, Status = 'wiederholen', Modified = NOW(), NachsteUbungDatum = NOW()
+                               WHERE user_id = ? AND Wort = ?")
+                    ->execute([$uid, $wort]);
+            }
+        }
+
+        $pdo->commit();
+    } catch (PDOException $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        error_log('Login word refresh failed: ' . $e->getMessage());
+    }
+}
+
 // Already logged in? Go straight to the app
 if (!empty($_SESSION['logged_in']) && !empty($_SESSION['user_id'])) {
-    header('Location: index.php');
+    // google_callback.php sends a fresh Google login through here once, to run the word refresh
+    if (!empty($_SESSION['refresh_words'])) {
+        unset($_SESSION['refresh_words']);
+        require_once 'db.php';
+        refreshWordsOnLogin($pdo, (int)$_SESSION['user_id']);
+    }
+    header('Location: ./');
     exit;
 }
 
@@ -41,7 +85,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['user_id']      = (int)$user['id'];
                 $_SESSION['username']     = $user['username'];
                 $_SESSION['display_name'] = $user['display_name'] ?: $user['username'];
-                header('Location: index.php');
+                refreshWordsOnLogin($pdo, (int)$user['id']);
+                header('Location: ./');
                 exit;
             }
 
@@ -135,12 +180,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         .btn:hover { background-color: var(--primary-dark); }
         .btn-google {
-            background: var(--input-bg);
-            color: var(--text-main);
-            border: 1px solid var(--input-border);
+            background: var(--primary);
+            color: #fff;
+            padding: 13px;
+            font-size: 1.05rem;
+            font-weight: 700;
+            box-shadow: 0 4px 14px rgba(236, 64, 122, 0.35);
         }
         .btn-google { display: flex; align-items: center; justify-content: center; gap: 10px; }
-        .btn-google:hover { background: #303030; }
+        .btn-google:hover { background: var(--primary-dark); }
+        .btn-google svg { background: #fff; border-radius: 50%; padding: 4px; box-sizing: content-box; }
+        .btn-secondary {
+            background: transparent;
+            color: var(--text-muted);
+            border: 1px solid var(--input-border);
+            font-weight: 500;
+            font-size: 0.9rem;
+            padding: 8px;
+        }
+        .btn-secondary:hover { background: rgba(255,255,255,0.05); color: var(--text-main); }
+        .login-form label { font-weight: 500; font-size: 0.8rem; color: var(--text-muted); }
+        .login-form input { padding: 8px 10px; font-size: 0.95rem; }
         .divider { display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 0.8rem; margin: 16px 0 8px; }
         .divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid var(--input-border); }
         .error { background: var(--danger-bg); color: var(--danger-text); padding: 10px; border-radius: 6px; margin-bottom: 1rem; font-size: 0.85rem; text-align: center; border: 1px solid var(--danger-border); }
@@ -157,11 +217,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div class="error"><?= htmlspecialchars($error) ?></div>
     <?php endif; ?>
 
-    <a href="google_login.php" class="btn btn-google"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="#4285F4" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.8h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.3z"/><path fill="#34A853" d="M12 22c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2 1-3.4 1-2.6 0-4.8-1.8-5.6-4.1H3.1v2.6A10 10 0 0 0 12 22z"/><path fill="#FBBC05" d="M6.4 14c-.2-.6-.3-1.3-.3-2s.1-1.4.3-2V7.4H3.1a10 10 0 0 0 0 9.2z"/><path fill="#EA4335" d="M12 5.9c1.5 0 2.8.5 3.8 1.5l2.9-2.9A10 10 0 0 0 3.1 7.4L6.4 10c.8-2.3 3-4.1 5.6-4.1z"/></svg>Mit Google anmelden</a>
+    <a href="google-login" class="btn btn-google"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="#4285F4" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.8h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.3z"/><path fill="#34A853" d="M12 22c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2 1-3.4 1-2.6 0-4.8-1.8-5.6-4.1H3.1v2.6A10 10 0 0 0 12 22z"/><path fill="#FBBC05" d="M6.4 14c-.2-.6-.3-1.3-.3-2s.1-1.4.3-2V7.4H3.1a10 10 0 0 0 0 9.2z"/><path fill="#EA4335" d="M12 5.9c1.5 0 2.8.5 3.8 1.5l2.9-2.9A10 10 0 0 0 3.1 7.4L6.4 10c.8-2.3 3-4.1 5.6-4.1z"/></svg>Mit Google anmelden</a>
 
     <div class="divider">oder</div>
 
-    <form action="login.php" method="POST">
+    <form action="login" method="POST" class="login-form">
         <label for="username">Benutzername</label>
         <input type="text" id="username" name="username" required autocomplete="username"
                value="<?= htmlspecialchars($_POST['username'] ?? '') ?>">
@@ -169,7 +229,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <label for="password">Passwort</label>
         <input type="password" id="password" name="password" required autocomplete="current-password">
 
-        <button type="submit" class="btn">Anmelden</button>
+        <button type="submit" class="btn btn-secondary">Anmelden</button>
     </form>
 
 </div>

@@ -13,7 +13,7 @@ $g = $config['google'];
 
 function fail(string $logMsg): void {
     error_log('Google login: ' . $logMsg);
-    header('Location: login.php?error=google');
+    header('Location: login?error=google');
     exit;
 }
 
@@ -109,6 +109,8 @@ $_SESSION['logged_in']    = true;
 $_SESSION['user_id']      = $user['id'];
 $_SESSION['username']     = $user['username'];
 $_SESSION['display_name'] = $name;
+$_SESSION['refresh_words'] = true;
 
-header('Location: index.php');
+// login.php runs the word refresh, then continues to index.php
+header('Location: login');
 exit;

@@ -13,7 +13,7 @@ session_start();
 
 $uid = (int)($_SESSION['user_id'] ?? 0);
 if (empty($_SESSION['logged_in']) || $uid <= 0) {
-    header('Location: login.php');
+    header('Location: login');
     exit;
 }
 
@@ -37,7 +37,7 @@ try {
     if (!$user) {
         session_unset();
         session_destroy();
-        header('Location: login.php');
+        header('Location: login');
         exit;
     }
 
@@ -248,7 +248,7 @@ function e(string $s): string {
 <main class="container">
     <header>
         <div class="header-title">
-            <a class="back-icon" href="index.php" title="Zurück zum Wortschatz" aria-label="Zurück zum Wortschatz">
+            <a class="back-icon" href="./" title="Zurück zum Wortschatz" aria-label="Zurück zum Wortschatz">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
             </a>
             <h1><span class="h-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7"/></svg></span>Mein Profil</h1>
@@ -296,7 +296,7 @@ function e(string $s): string {
             </p>
         <?php else: ?>
             <h2>Passwort ändern</h2>
-            <form method="post" action="profile.php" autocomplete="off">
+            <form method="post" action="profil" autocomplete="off">
                 <input type="hidden" name="csrf_token" value="<?= e($_SESSION['csrf_token']) ?>">
 
                 <label for="current_password">Aktuelles Passwort</label>
