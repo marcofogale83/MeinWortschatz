@@ -145,18 +145,31 @@ function jsonInput(): array {
 
 // True when the browser says the request comes from this site (Origin, else Referer).
 // Browsers always send Origin on fetch() POSTs; a missing header is allowed for old clients.
+// Compares host names only (no port), and also accepts the host a proxy forwards,
+// because some hosts report "example.ch:443" or an internal name in HTTP_HOST.
 function isSameOriginRequest(): bool {
     $source = $_SERVER['HTTP_ORIGIN'] ?? ($_SERVER['HTTP_REFERER'] ?? '');
-    if ($source === '') {
+    if ($source === '' || $source === 'null') {
         return true;
     }
-    $host = parse_url($source, PHP_URL_HOST);
-    $port = parse_url($source, PHP_URL_PORT);
-    if (!is_string($host)) {
+    $origin = parse_url($source, PHP_URL_HOST);
+    if (!is_string($origin) || $origin === '') {
         return false;
     }
-    $origin = strtolower($host . ($port ? ':' . $port : ''));
-    return hash_equals(strtolower($_SERVER['HTTP_HOST'] ?? ''), $origin);
+    $origin = strtolower($origin);
+    $hostOnly = fn($h) => strtolower(preg_replace('/:\d+$/', '', trim(explode(',', (string)$h)[0])));
+    $candidates = [
+        $_SERVER['HTTP_HOST'] ?? '',
+        $_SERVER['HTTP_X_FORWARDED_HOST'] ?? '',
+        $_SERVER['SERVER_NAME'] ?? '',
+    ];
+    foreach ($candidates as $c) {
+        if ($c !== '' && hash_equals($hostOnly($c), $origin)) {
+            return true;
+        }
+    }
+    error_log('Blocked API POST: origin ' . $origin . ' does not match host ' . ($_SERVER['HTTP_HOST'] ?? ''));
+    return false;
 }
 
 function likeEscape(string $s): string {
@@ -5277,7 +5290,7 @@ function getArticleColorClass(artikel) {
 }
 
 function showAlert(msg) {
-    const box = document.getElementBFglMrc83$yId('alertBox');
+    const box = document.getElementById('alertBox');
     box.textContent = msg;
     box.style.display = 'block';
     setTimeout(() => { box.style.display = 'none'; }, 4000);
