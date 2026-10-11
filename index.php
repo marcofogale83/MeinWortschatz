@@ -143,6 +143,22 @@ function jsonInput(): array {
     return is_array($data) ? $data : [];
 }
 
+// True when the browser says the request comes from this site (Origin, else Referer).
+// Browsers always send Origin on fetch() POSTs; a missing header is allowed for old clients.
+function isSameOriginRequest(): bool {
+    $source = $_SERVER['HTTP_ORIGIN'] ?? ($_SERVER['HTTP_REFERER'] ?? '');
+    if ($source === '') {
+        return true;
+    }
+    $host = parse_url($source, PHP_URL_HOST);
+    $port = parse_url($source, PHP_URL_PORT);
+    if (!is_string($host)) {
+        return false;
+    }
+    $origin = strtolower($host . ($port ? ':' . $port : ''));
+    return hash_equals(strtolower($_SERVER['HTTP_HOST'] ?? ''), $origin);
+}
+
 function likeEscape(string $s): string {
     return addcslashes($s, '%_\\');
 }
@@ -397,6 +413,13 @@ if (isset($_GET['api'])) {
 
     if (!$isLoggedIn) {
         echo json_encode(['error' => 'Unauthorized']);
+        exit;
+    }
+
+    // CSRF defence in depth (on top of the SameSite=Lax cookie): a POST must come from this site
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isSameOriginRequest()) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'error' => 'Ungültige Anfrage.']);
         exit;
     }
 
@@ -1169,8 +1192,7 @@ try {
     <?php theme_head(); ?>
     <title>vokabiq</title>
 
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@800&text=vokabiqABCDEFGHIJKLMNOPQRSTUVWXYZ%C3%84%C3%96%C3%9C&display=swap">
+    <link rel="stylesheet" href="assets/fonts/nunito.css">
 
     <meta name="theme-color" content="#1e88e5">
     <meta name="mobile-web-app-capable" content="yes">
@@ -1181,7 +1203,7 @@ try {
 
     <link rel="icon" type="image/png" sizes="32x32" href="data:image/png;base64,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">
 
-    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+    <script src="assets/js/chart-4.5.1.umd.min.js" defer></script>
 
     <style>
         :root {
@@ -1328,13 +1350,11 @@ try {
         }
         button.account-menu-item { width: 100%; border: 0; background: transparent; font: inherit; font-size: 0.9rem; text-align: left; cursor: pointer; }
         .account-menu-item:hover { background: var(--md-menu-hover); }
-        /* Level brain (Profil) and three little brains (Community) in the account menu */
+        /* Level brain (Profil) in the account menu */
         .menu-ico { display: inline-flex; align-items: center; justify-content: center; width: 58px; margin-right: 10px; flex-shrink: 0; }
         .menu-ico img:not([src]) { visibility: hidden; }
         .menu-brain { width: 32px; height: 32px; border-radius: 50%; border: 2px solid var(--md-aktiva-green); object-fit: cover; }
         .menu-brain.is-locked { filter: grayscale(1); opacity: 0.75; border-color: var(--md-border); }
-        .menu-brains img { width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--md-surface); object-fit: cover; }
-        .menu-brains img + img { margin-left: -9px; }
         .menu-lvl { margin-left: auto; padding: 1px 8px; border-radius: 999px; font-size: 0.72rem; font-weight: 700; color: var(--md-aktiva-green); background: rgba(236,64,122,0.14); }
         .menu-lvl:empty { display: none; }
         .account-menu-theme { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px 10px; border-bottom: 1px solid var(--md-border); margin-bottom: 4px; font-size: 0.9rem; }
@@ -2181,8 +2201,9 @@ try {
                             <span class="account-menu-plan">Abo: <?= htmlspecialchars(['free' => 'Gratis', 'ai' => 'KI', 'ai_full' => 'KI Plus'][$subscription] ?? 'Gratis', ENT_QUOTES, 'UTF-8') ?></span>
                         </div>
                         <a class="account-menu-item" href="profil"><span class="menu-ico"><img class="menu-brain" id="menuLevelBrain" alt=""></span>Mein Profil<span class="menu-lvl" id="menuLevelName"></span></a>
-                        <a class="account-menu-item" href="community"><span class="menu-ico menu-brains" id="menuCommunityBrains"><img alt=""><img alt=""><img alt=""></span>Community</a>
                         <a class="account-menu-item" href="./?api=export_csv">📥 CSV exportieren</a>
+                        <a class="account-menu-item" href="datenschutz">🔒 Datenschutz</a>
+                        <a class="account-menu-item" href="impressum">ℹ️ Impressum</a>
                         <a class="account-menu-item account-menu-logout" href="logout">↪ Abmelden</a>
                         </div>
                     </div>
@@ -3262,7 +3283,7 @@ const LEVEL_MOBILE_COUNT = 4;
 let lastLevelCount = 0;
 LEVEL_MOBILE_MQ.addEventListener?.('change', () => renderLevelPath(lastLevelCount));
 
-// Account menu: Profil shows the brain of the current level, Community three little brains
+// Account menu: Profil shows the brain of the current level
 function updateMenuBrains(reached) {
     const img = document.getElementById('menuLevelBrain');
     if (img) {
@@ -3271,7 +3292,6 @@ function updateMenuBrains(reached) {
     }
     const name = document.getElementById('menuLevelName');
     if (name) name.textContent = reached >= 0 ? LEVELS[reached].name : '';
-    document.querySelectorAll('#menuCommunityBrains img:not([src])').forEach((b, k) => { b.src = LEVEL_THUMBS[[0, 3, 6][k]]; });
 }
 function renderLevelPath(aktivaCount) {
     const box = document.getElementById('levelPath');

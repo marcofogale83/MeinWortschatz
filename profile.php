@@ -19,9 +19,24 @@ if (empty($_SESSION['logged_in']) || $uid <= 0) {
 
 require_once 'db.php';
 require_once 'theme.php';
+require_once 'legal.php';
 
 if (empty($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
+// Deletes the account and everything linked to it (words incl. images).
+// One transaction: all or nothing.
+function deleteAccount(PDO $pdo, int $uid): void {
+    $pdo->beginTransaction();
+    try {
+        $pdo->prepare('DELETE FROM meine_wortschatz WHERE user_id = ?')->execute([$uid]);
+        $pdo->prepare('DELETE FROM users WHERE id = ?')->execute([$uid]);
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
 }
 
 $error = '';
@@ -52,6 +67,18 @@ try {
 
         if (!is_string($csrfToken) || !hash_equals($_SESSION['csrf_token'], $csrfToken)) {
             $error = 'Die Anfrage ist abgelaufen. Bitte laden Sie die Seite neu und versuchen Sie es erneut.';
+        } elseif (($_POST['action'] ?? '') === 'delete_account') {
+            // Account deletion: the user must type LÖSCHEN to confirm
+            $confirmText = mb_strtoupper(trim((string)($_POST['confirm_delete'] ?? '')), 'UTF-8');
+            if ($confirmText !== 'LÖSCHEN' && $confirmText !== 'LOESCHEN') {
+                $error = 'Bitte geben Sie zur Bestätigung LÖSCHEN ein.';
+            } else {
+                deleteAccount($pdo, $uid);
+                session_unset();
+                session_destroy();
+                header('Location: login?deleted=1');
+                exit;
+            }
         } elseif ($isGoogleOnly) {
             // Server-side block, even if someone sends the form manually
             $error = 'Dieses Konto verwendet die Google-Anmeldung. Das Passwort wird bei Google verwaltet.';
@@ -281,6 +308,12 @@ function e(string $s): string {
         .success { background: var(--success-bg); color: var(--success-text); }
         .info { background: var(--info-bg); color: var(--info-text); }
         .info a { color: var(--info-text); }
+        .profile-section + .profile-section { margin-top: 20px; }
+        .section-description a { color: var(--accent); }
+        .neutral-button { background: var(--neutral-btn); color: var(--neutral-btn-text); }
+        .neutral-button:hover { background: var(--neutral-btn-hover); }
+        .delete-button { background: #c62828; }
+        .delete-button:hover { background: #a61f1f; }
         @media (max-width: 520px) {
             header { padding: 12px 14px; }
             .profile-section { padding: 18px 16px; }
@@ -363,6 +396,30 @@ function e(string $s): string {
             </form>
         <?php endif; ?>
     </section>
+
+    <section class="profile-section" aria-labelledby="data-heading">
+        <h2 id="data-heading">Meine Daten</h2>
+        <p class="section-description">
+            Sie können Ihre Wortliste jederzeit herunterladen. Welche Daten wir speichern, steht in der
+            <a href="datenschutz">Datenschutzerklärung</a>.
+        </p>
+        <p><a class="submit-button neutral-button" href="./?api=export_csv">📥 Wortliste als CSV herunterladen</a></p>
+
+        <h2>Konto löschen</h2>
+        <p class="section-description">
+            Löscht sofort und endgültig Ihr Konto und alle Wörter und Bilder. Das kann nicht rückgängig gemacht werden. Laden Sie vorher Ihre Wortliste herunter,
+            wenn Sie sie behalten möchten.
+        </p>
+        <form method="post" action="profil" autocomplete="off"
+              onsubmit="return confirm('Konto und alle Daten wirklich endgültig löschen?');">
+            <input type="hidden" name="csrf_token" value="<?= e($_SESSION['csrf_token']) ?>">
+            <input type="hidden" name="action" value="delete_account">
+            <label for="confirm_delete">Zur Bestätigung LÖSCHEN eingeben</label>
+            <input type="text" id="confirm_delete" name="confirm_delete" required autocomplete="off" spellcheck="false">
+            <button class="submit-button delete-button" type="submit">Konto endgültig löschen</button>
+        </form>
+    </section>
+    <?php legal_footer(); ?>
 </main>
 </body>
 </html>
