@@ -1283,6 +1283,15 @@ try {
         }
         button.account-menu-item { width: 100%; border: 0; background: transparent; font: inherit; font-size: 0.9rem; text-align: left; cursor: pointer; }
         .account-menu-item:hover { background: var(--md-menu-hover); }
+        /* Level brain (Profil) and three little brains (Community) in the account menu */
+        .menu-ico { display: inline-flex; align-items: center; justify-content: center; width: 58px; margin-right: 10px; flex-shrink: 0; }
+        .menu-ico img:not([src]) { visibility: hidden; }
+        .menu-brain { width: 32px; height: 32px; border-radius: 50%; border: 2px solid var(--md-aktiva-green); object-fit: cover; }
+        .menu-brain.is-locked { filter: grayscale(1); opacity: 0.75; border-color: var(--md-border); }
+        .menu-brains img { width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--md-surface); object-fit: cover; }
+        .menu-brains img + img { margin-left: -9px; }
+        .menu-lvl { margin-left: auto; padding: 1px 8px; border-radius: 999px; font-size: 0.72rem; font-weight: 700; color: var(--md-aktiva-green); background: rgba(236,64,122,0.14); }
+        .menu-lvl:empty { display: none; }
         .account-menu-theme { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px 10px; border-bottom: 1px solid var(--md-border); margin-bottom: 4px; font-size: 0.9rem; }
         .theme-label-light { display: none; }
         :root[data-theme="light"] .theme-label-dark { display: none; }
@@ -2117,8 +2126,8 @@ try {
                             <span class="account-menu-caption">Angemeldet als</span>
                             <strong><?= htmlspecialchars((string)(($_SESSION['display_name'] ?? '') ?: ($_SESSION['username'] ?? 'Benutzer')), ENT_QUOTES, 'UTF-8') ?></strong>
                         </div>
-                        <a class="account-menu-item" href="profil">👤 Mein Profil</a>
-                        <a class="account-menu-item" href="community">👥 Community</a>
+                        <a class="account-menu-item" href="profil"><span class="menu-ico"><img class="menu-brain" id="menuLevelBrain" alt=""></span>Mein Profil<span class="menu-lvl" id="menuLevelName"></span></a>
+                        <a class="account-menu-item" href="community"><span class="menu-ico menu-brains" id="menuCommunityBrains"><img alt=""><img alt=""><img alt=""></span>Community</a>
                         <a class="account-menu-item" href="./?api=export_csv">📥 CSV exportieren</a>
                         <a class="account-menu-item account-menu-logout" href="logout">↪ Abmelden</a>
                         </div>
@@ -3151,6 +3160,17 @@ const LEVEL_MOBILE_COUNT = 4;
 let lastLevelCount = 0;
 LEVEL_MOBILE_MQ.addEventListener?.('change', () => renderLevelPath(lastLevelCount));
 
+// Account menu: Profil shows the brain of the current level, Community three little brains
+function updateMenuBrains(reached) {
+    const img = document.getElementById('menuLevelBrain');
+    if (img) {
+        img.src = LEVEL_THUMBS[Math.max(0, reached)];
+        img.classList.toggle('is-locked', reached < 0);
+    }
+    const name = document.getElementById('menuLevelName');
+    if (name) name.textContent = reached >= 0 ? LEVELS[reached].name : '';
+    document.querySelectorAll('#menuCommunityBrains img:not([src])').forEach((b, k) => { b.src = LEVEL_THUMBS[[0, 3, 6][k]]; });
+}
 function renderLevelPath(aktivaCount) {
     const box = document.getElementById('levelPath');
     if (!box) return;
@@ -3161,6 +3181,7 @@ function renderLevelPath(aktivaCount) {
 
     let reached = -1; // highest level reached (-1 = none yet)
     LEVELS.forEach((l, i) => { if (n >= l.min) reached = i; });
+    updateMenuBrains(reached);
     const next = reached + 1 < LEVELS.length ? reached + 1 : -1;
     const prevMin = reached >= 0 ? LEVELS[reached].min : 0;
     const frac = next >= 0 ? Math.min(1, (n - prevMin) / (LEVELS[next].min - prevMin)) : 1;
