@@ -1858,8 +1858,10 @@ try {
         .setup-start-btn .btn-ico svg { width: 16px; height: 16px; margin-left: 2px; }
         .setup-change-btn { font-size: 0.85rem; padding: 8px 14px; display: inline-flex; align-items: center; gap: 8px; }
         .setup-change-btn svg { width: 16px; height: 16px; }
-        .word-display { font-size: 2.7rem; font-weight: 700; margin: 1rem 0 0.3rem 0; text-align: center; }
-        .details-box { background: var(--md-surface-card); border: 1px solid var(--md-border); border-radius: 8px; padding: 16px; margin-bottom: 1.5rem; }
+        /* Long words shrink a little on small screens and wrap (with hyphen) instead of leaving the card */
+        .word-display { font-size: clamp(1.7rem, 8vw, 2.7rem); font-weight: 700; margin: 1rem 0 0.3rem 0; text-align: center; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; hyphens: auto; line-height: 1.15; }
+        #gameConjugationDisplay, #gamePluralDisplay { overflow-wrap: anywhere; }
+        .details-box { background: var(--md-surface-card); border: 1px solid var(--md-border); border-radius: 8px; padding: 16px; margin-bottom: 1.5rem; overflow-wrap: anywhere; }
         .details-box p { margin: 8px 0; font-size: 0.95rem; }
         /* Rating bar in the standard game: same look as the table, but bigger */
         .game-rate-group { margin-top: 1.5rem; border-radius: 12px; }
