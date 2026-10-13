@@ -25,6 +25,7 @@ session_start();
 // db.php loads config.php and creates $pdo and $config
 require_once 'db.php';
 require_once 'theme.php';
+require_once 'user_settings.php';
 
 // --- CURRENT USER: every vocabulary query is scoped to this ID ---
 $uid = (int)($_SESSION['user_id'] ?? 0);
@@ -45,6 +46,10 @@ if ($isLoggedIn) {
         error_log('Subscription lookup failed: ' . $e->getMessage());
     }
 }
+
+// --- TRANSLATION LANGUAGES: up to 3, chosen in the profile; null = not chosen yet (first visit) ---
+$translationLangs = $isLoggedIn ? getTranslationLanguages($pdo, $uid) : DEFAULT_TRANSLATION_LANGUAGES;
+$translationLangNames = languageNames($translationLangs ?? DEFAULT_TRANSLATION_LANGUAGES);
 
 // 'llm' = text AI (fill word, sentence checks, Deutsch Meister), 'image' = image generation
 function planAllows(string $plan, string $feature): bool {
@@ -820,9 +825,9 @@ if (isset($_GET['api'])) {
                     "  \"praeposition_kollokation\": \"Nur wenn Verb: Präpositionalkollokation mit fett markierter Präposition oder Beispielspräposition, z.B. 'sich interessieren **für**' oder 'warten **auf**' (sonst leer)\",\n" .
                     "  \"artikel\": \"Nur wenn kein Verb und Artikel existiert: z.B. der, die, das (sonst leer)\",\n" .
                     "  \"plural\": \"Nur wenn kein Verb und Plural existiert: z.B. die Autos, die Häuser (sonst leer)\",\n" .
-                    "  \"uebersetzung\": \"Englisch: ..., Französisch: ..., Italienisch: ...\",\n" .
+                    "  \"uebersetzung\": \"" . implode(', ', array_map(fn($l) => "$l: ...", $translationLangNames)) . "\",\n" .
                     "  \"synonym\": \"Synonym auf Deutsch (oder leer)\",\n" .
-                    "  \"beispiel\": \"Beispielsatz auf Deutsch und Übersetzung auf Französisch\"\n" .
+                    "  \"beispiel\": \"Beispielsatz auf Deutsch und Übersetzung auf " . $translationLangNames[0] . "\"\n" .
                     "}";
 
         $ai = callDeepSeek($userPrompt);
@@ -1143,6 +1148,12 @@ if (isset($_GET['api'])) {
 // Ensure login check for page render
 if (!$isLoggedIn) {
     header('Location: login');
+    exit;
+}
+
+// First visit: choose plan and translation languages before using the app
+if ($translationLangs === null) {
+    header('Location: willkommen');
     exit;
 }
 
@@ -2333,13 +2344,13 @@ try {
                         </div>
 
                         <label for="Übersetzung">Übersetzung</label>
-                        <input type="text" id="Übersetzung" name="Übersetzung" placeholder="z.B. Englisch, Französisch, Italienisch">
+                        <input type="text" id="Übersetzung" name="Übersetzung" placeholder="z.B. <?= htmlspecialchars(implode(', ', $translationLangNames), ENT_QUOTES, 'UTF-8') ?>">
 
                         <label for="synonym">Synonym</label>
                         <input type="text" id="synonym" name="synonym">
 
                         <label for="Beispiel">Beispiel</label>
-                        <textarea id="Beispiel" name="Beispiel" rows="2" placeholder="Beispiel auf Deutsch und Französisch"></textarea>
+                        <textarea id="Beispiel" name="Beispiel" rows="2" placeholder="Beispiel auf Deutsch und <?= htmlspecialchars($translationLangNames[0], ENT_QUOTES, 'UTF-8') ?>"></textarea>
                     </div>
 
                     <div class="form-group-section">
