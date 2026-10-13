@@ -624,6 +624,11 @@ if (isset($_GET['api'])) {
         exit;
     }
 
+    if ($action === 'get_plan') {
+        echo json_encode(['name' => $subscription, 'llm' => planAllows($subscription, 'llm'), 'image' => planAllows($subscription, 'image')]);
+        exit;
+    }
+
     if ($action === 'get_stats') {
         $filterList = $_GET['sharepoint_list'] ?? '';
         $filterThema = $_GET['thema'] ?? '';
@@ -2228,7 +2233,7 @@ try {
                         <div class="account-menu-identity">
                             <span class="account-menu-caption">Angemeldet als</span>
                             <strong><?= htmlspecialchars((string)(($_SESSION['display_name'] ?? '') ?: ($_SESSION['username'] ?? 'Benutzer')), ENT_QUOTES, 'UTF-8') ?></strong>
-                            <span class="account-menu-plan">Abo: <?= htmlspecialchars(['free' => 'Gratis', 'ai' => 'KI', 'ai_full' => 'KI Plus'][$subscription] ?? 'Gratis', ENT_QUOTES, 'UTF-8') ?></span>
+                            <span class="account-menu-plan">Abo: <span id="menuPlanName"><?= htmlspecialchars(['free' => 'Gratis', 'ai' => 'KI', 'ai_full' => 'KI Plus'][$subscription] ?? 'Gratis', ENT_QUOTES, 'UTF-8') ?></span></span>
                         </div>
                         <a class="account-menu-item" href="profil"><span class="menu-ico"><img class="menu-brain" id="menuLevelBrain" alt=""></span>Mein Profil<span class="menu-lvl" id="menuLevelName"></span></a>
                         <a class="account-menu-item" href="./?api=export_csv">📥 CSV exportieren</a>
@@ -2275,7 +2280,7 @@ try {
                         <div class="word-hero-row">
                             <input type="text" id="Wort" name="Wort" required autocomplete="off" placeholder="z.B. Haus, laufen, schnell" onkeydown="handleWortKeydown(event)">
                             <button type="button" class="btn btn-info ai-btn" onclick="fillWordWithAI()" id="aiFillBtn">Mit KI ausfüllen</button>
-                            <button type="button" class="btn btn-info ai-btn" onclick="generateAiImageForEditWord()" id="editImageBtn" style="display: none;">Bild generieren</button>
+                            <button type="button" class="btn btn-info ai-btn" onclick="generateAiImageForEditWord()" id="editImageBtn">Bild generieren</button>
                         </div>
                         <p class="word-hero-hint">Gib das Wort ein und lass die KI die restlichen Felder ausfüllen – oder fülle sie unten selbst aus.</p>
                         <div class="edit-image-container" id="editImageContainer" style="display: none;">
@@ -2927,7 +2932,7 @@ let cachedStatuses = <?= jsonForScript($initialStatuses) ?>;
 let cachedThemaWortartenMap = <?= jsonForScript($initialThemaWortartenMap) ?>;
 
 // Subscription plan: which AI features this user may use (the server enforces the same rules)
-const PLAN = <?= jsonForScript(['name' => $subscription, 'llm' => planAllows($subscription, 'llm'), 'image' => planAllows($subscription, 'image')]) ?>;
+let PLAN = <?= jsonForScript(['name' => $subscription, 'llm' => planAllows($subscription, 'llm'), 'image' => planAllows($subscription, 'image')]) ?>;
 const PLAN_UPGRADE_HINT = {
     llm: 'KI-Funktionen sind ab dem Abo „KI“ verfügbar. Upgrade, um sie freizuschalten.',
     image: 'Die Bildgenerierung ist nur im Abo „KI Plus“ enthalten. Upgrade, um sie freizuschalten.'
@@ -2940,32 +2945,48 @@ function planLocked(feature) {
     return true;
 }
 
-// Marks the AI controls the plan does not include, so users see what an upgrade unlocks
+// Marks the AI controls the plan does not include, so users see what an upgrade unlocks.
+// Also unlocks them again, so it can run whenever the plan changes.
+const PLAN_NAMES = { free: 'Gratis', ai: 'KI', ai_full: 'KI Plus' };
+const WORD_HERO_HINT_DEFAULT = document.querySelector('.word-hero-hint')?.textContent || '';
+function setPlanLock(el, feature) {
+    if (!el) return;
+    const locked = !PLAN[feature];
+    el.classList.toggle('plan-locked', locked);
+    if (locked) el.title = PLAN_UPGRADE_HINT[feature];
+    else if (el.title === PLAN_UPGRADE_HINT[feature]) el.removeAttribute('title');
+}
 function applyPlanLocks() {
     const lockedIds = { llm: ['aiFillBtn', 'toggleSentenceWriterBtn', 'dddToggleSentenceBtn'], image: ['editImageBtn', 'generateImageBtn'] };
     Object.keys(lockedIds).forEach(feature => {
-        if (PLAN[feature]) return;
-        lockedIds[feature].forEach(id => {
-            const el = document.getElementById(id);
-            if (el) {
-                el.classList.add('plan-locked');
-                el.title = PLAN_UPGRADE_HINT[feature];
-            }
-        });
+        lockedIds[feature].forEach(id => setPlanLock(document.getElementById(id), feature));
     });
-    if (!PLAN.llm) {
-        const tile = document.querySelector('.mode-tile[data-mode="deutsch_meister"]');
-        if (tile) {
-            tile.classList.add('plan-locked');
-            tile.title = PLAN_UPGRADE_HINT.llm;
-        }
-        const opt = document.querySelector('#gameModeSelect option[value="deutsch_meister"]');
-        if (opt) opt.disabled = true;
-        const hint = document.querySelector('.word-hero-hint');
-        if (hint) hint.textContent = 'KI-Ausfüllen ist ab dem Abo „KI“ verfügbar. Fülle die Felder unten selbst aus.';
-    }
+    setPlanLock(document.querySelector('.mode-tile[data-mode="deutsch_meister"]'), 'llm');
+    const opt = document.querySelector('#gameModeSelect option[value="deutsch_meister"]');
+    if (opt) opt.disabled = !PLAN.llm;
+    const hint = document.querySelector('.word-hero-hint');
+    if (hint) hint.textContent = PLAN.llm ? WORD_HERO_HINT_DEFAULT : 'KI-Ausfüllen ist ab dem Abo „KI“ verfügbar. Fülle die Felder unten selbst aus.';
+    const menuPlan = document.getElementById('menuPlanName');
+    if (menuPlan) menuPlan.textContent = PLAN_NAMES[PLAN.name] || 'Gratis';
 }
 applyPlanLocks();
+
+// The plan can change in the profile while this page stays open (other tab, back button,
+// app in the background): ask the server again whenever the page becomes visible.
+async function refreshPlan() {
+    try {
+        const res = await fetch('index.php?api=get_plan&_ts=' + Date.now(), { cache: 'no-store' });
+        const data = await res.json();
+        if (!data || typeof data.llm !== 'boolean') return;
+        if (data.name === PLAN.name && data.llm === PLAN.llm && data.image === PLAN.image) return;
+        PLAN = data;
+        applyPlanLocks();
+    } catch (err) {
+        console.error('Abo konnte nicht geladen werden', err);
+    }
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshPlan(); });
+window.addEventListener('pageshow', e => { if (e.persisted) refreshPlan(); });
 
 let todayReviewedCount = <?= (int)$todayReviewedCount ?>;
 let lastPopupWordObject = null;
@@ -3164,10 +3185,30 @@ async function loadEditImage(word) {
 async function generateAiImageForEditWord() {
     if (planLocked('image')) return;
     // the image is stored on the saved word, so use the original name (not unsaved edits)
-    const word = document.getElementById('original_wort').value;
+    let word = document.getElementById('original_wort').value;
     if (!word) {
-        alert('Bitte speichere das Wort zuerst.');
-        return;
+        // New word: save it first so the image has a word to belong to
+        const newWord = document.getElementById('Wort').value.trim();
+        if (!newWord) {
+            alert('Bitte gib zuerst das Wort ein.');
+            return;
+        }
+        const result = await saveWordRequest();
+        if (!result) return;
+        if (!result.success) {
+            alert(result.message || 'Fehler beim Speichern des Wortes.');
+            return;
+        }
+        showAlert(result.message);
+        todayReviewedCount++;
+        updateDailyTrackerUI();
+        refreshMetadata();
+        loadDashboardData(true);
+        // from now on the form edits the saved word
+        document.getElementById('original_wort').value = newWord;
+        document.getElementById('formTitle').textContent = 'Wort bearbeiten';
+        document.getElementById('formSubmitBtn').textContent = 'Wort aktualisieren';
+        word = newWord;
     }
 
     const btn = document.getElementById('editImageBtn');
@@ -5164,7 +5205,7 @@ function resetForm() {
     formCurrentScore = 0;
     setFormKenntnisse('');
     toggleVerbFields();
-    hideEditImage();
+    loadEditImage(''); // no image yet, but the button is offered for new words too
     document.getElementById('formTitle').textContent = 'Neues Wort hinzufügen';
     document.getElementById('formSubmitBtn').textContent = 'Wort speichern';
     document.getElementById('formContainer').classList.remove('active');
@@ -5204,9 +5245,26 @@ function editWord(row) {
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-async function submitWordForm(e) {
-    e.preventDefault();
-    const formData = {
+// Sends the word form to the server; returns the server's answer, or null after a login redirect
+async function saveWordRequest() {
+    const formData = collectWordForm();
+    const res = await fetch('index.php?api=save&_ts=' + Date.now(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify(formData)
+    });
+    const result = await res.json();
+    if (result.error === 'Unauthorized') {
+        window.location.href = 'login';
+        return null;
+    }
+    result.formData = formData;
+    return result;
+}
+
+function collectWordForm() {
+    return {
         original_wort: document.getElementById('original_wort').value,
         sharepoint_list: document.getElementById('sharepoint_list').value,
         Thema: document.getElementById('Thema').value,
@@ -5224,18 +5282,13 @@ async function submitWordForm(e) {
         Beispiel: document.getElementById('Beispiel').value,
         Kenntnisse: document.getElementById('Kenntnisse').value
     };
+}
 
-    const res = await fetch('index.php?api=save&_ts=' + Date.now(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        cache: 'no-store',
-        body: JSON.stringify(formData)
-    });
-    const result = await res.json();
-    if (result.error === 'Unauthorized') {
-        window.location.href = 'login';
-        return;
-    }
+async function submitWordForm(e) {
+    e.preventDefault();
+    const result = await saveWordRequest();
+    if (!result) return;
+    const formData = result.formData;
 
     if (result.success) {
         showAlert(result.message);

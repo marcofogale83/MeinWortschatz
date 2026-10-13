@@ -79,6 +79,17 @@ try {
                 header('Location: login?deleted=1');
                 exit;
             }
+        } elseif (($_POST['action'] ?? '') === 'change_plan') {
+            // Plan change by the user. Applies at once: index.php reads the plan on every request.
+            // Later this is where the payment provider gets called before saving.
+            $newPlan = (string)($_POST['plan'] ?? '');
+            $planNames = ['free' => 'Gratis', 'ai' => 'KI', 'ai_full' => 'KI Plus'];
+            if (!isset($planNames[$newPlan])) {
+                $error = 'Bitte wählen Sie ein Abo aus.';
+            } else {
+                $pdo->prepare('UPDATE users SET subscription = ? WHERE id = ?')->execute([$newPlan, $uid]);
+                $success = 'Ihr Abo ist jetzt „' . $planNames[$newPlan] . '“. Die Änderung gilt sofort.';
+            }
         } elseif ($isGoogleOnly) {
             // Server-side block, even if someone sends the form manually
             $error = 'Dieses Konto verwendet die Google-Anmeldung. Das Passwort wird bei Google verwaltet.';
@@ -310,6 +321,14 @@ function e(string $s): string {
         .info a { color: var(--info-text); }
         .profile-section + .profile-section { margin-top: 20px; }
         .section-description a { color: var(--accent); }
+        .plan-form { display: grid; gap: 10px; margin-bottom: 28px; }
+        .plan-option { display: flex; align-items: flex-start; gap: 12px; margin: 0; padding: 12px 14px; border: 1px solid var(--row-border); border-radius: 10px; cursor: pointer; font-weight: 400; }
+        .plan-option:has(input:checked) { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
+        .plan-option input { width: 18px; height: 18px; min-height: 0; margin: 2px 0 0; padding: 0; accent-color: var(--primary); flex-shrink: 0; }
+        .plan-text { display: grid; gap: 2px; min-width: 0; }
+        .plan-text span { color: var(--muted); font-size: 0.88rem; }
+        .plan-badge { margin-left: 6px; padding: 1px 8px; border-radius: 999px; font-size: 0.72rem; color: var(--primary); background: var(--row-border); vertical-align: middle; }
+        .plan-form .submit-button { margin-top: 4px; }
         .neutral-button { background: var(--neutral-btn); color: var(--neutral-btn-text); }
         .neutral-button:hover { background: var(--neutral-btn-hover); }
         .delete-button { background: #c62828; }
@@ -371,6 +390,29 @@ function e(string $s): string {
             </div>
             <div class="account-row"><span>Abo</span><strong><?= e($planLabels[$subscription]) ?></strong></div>
         </div>
+
+        <h2 id="plan-heading">Abo ändern</h2>
+        <p class="section-description">Sie können Ihr Abo jederzeit wechseln. Die Änderung gilt sofort.</p>
+        <form method="post" action="profil" class="plan-form" aria-labelledby="plan-heading">
+            <input type="hidden" name="csrf_token" value="<?= e($_SESSION['csrf_token']) ?>">
+            <input type="hidden" name="action" value="change_plan">
+            <?php
+            $planOptions = [
+                'free'    => ['Gratis', 'Wörter lernen, alle Spiele ohne KI, Statistik'],
+                'ai'      => ['KI', 'Alles aus Gratis, plus KI-Ausfüllen, Satzprüfung und Deutsch Meister'],
+                'ai_full' => ['KI Plus', 'Alles aus KI, plus Bildgenerierung zu Ihren Wörtern'],
+            ];
+            foreach ($planOptions as $value => [$title, $desc]): ?>
+                <label class="plan-option<?= $value === $subscription ? ' is-current' : '' ?>">
+                    <input type="radio" name="plan" value="<?= e($value) ?>"<?= $value === $subscription ? ' checked' : '' ?>>
+                    <span class="plan-text">
+                        <strong><?= e($title) ?><?= $value === $subscription ? ' <span class="plan-badge">aktuell</span>' : '' ?></strong>
+                        <span><?= e($desc) ?></span>
+                    </span>
+                </label>
+            <?php endforeach; ?>
+            <button class="submit-button" type="submit">Abo speichern</button>
+        </form>
 
         <?php if ($isGoogleOnly): ?>
             <p class="message info" role="note">
