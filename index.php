@@ -638,7 +638,6 @@ if (isset($_GET['api'])) {
         $filterList = $_GET['sharepoint_list'] ?? '';
         $filterThema = $_GET['thema'] ?? '';
         $filterWortart = $_GET['wortart'] ?? '';
-        $filterScore = isset($_GET['score']) && $_GET['score'] !== '' ? $_GET['score'] : '';
 
         $query = "SELECT Status, COUNT(*) as count FROM meine_wortschatz WHERE user_id = ?";
         $params = [$uid];
@@ -655,18 +654,21 @@ if (isset($_GET['api'])) {
             $query .= " AND Wortarten = ?";
             $params[] = $filterWortart;
         }
-        if ($filterScore !== '') {
-            $query .= " AND Score = ?";
-            $params[] = (int)$filterScore;
-        }
-
+        $filterSql = substr($query, strlen("SELECT Status, COUNT(*) as count FROM meine_wortschatz WHERE user_id = ?"));
         $query .= " GROUP BY Status ORDER BY FIELD(Status, 'aktiva', 'wiederholen', 'neu', 'passiv', 'warteschlange')";
 
         $stmt = $pdo->prepare($query);
         $stmt->execute($params);
         $stats = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        echo json_encode(['stats' => $stats]);
+        // Words that are aktiva today, counted per creation day (same filters); the page sums them up
+        $stmt = $pdo->prepare("SELECT DATE(Created) AS day, COUNT(*) AS count FROM meine_wortschatz
+                               WHERE user_id = ? AND Status = 'aktiva' AND Created IS NOT NULL" . $filterSql . "
+                               GROUP BY DATE(Created) ORDER BY day");
+        $stmt->execute($params);
+        $aktivaByDay = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        echo json_encode(['stats' => $stats, 'aktiva_by_day' => $aktivaByDay]);
         exit;
     }
 
@@ -1929,6 +1931,8 @@ try {
         }
 
         .stats-container { max-width: 900px; margin: 0 auto; }
+        .chart-wrapper-wide { max-width: 640px; height: 280px; }
+        .stats-chart-note { margin: -0.3rem 0 0.8rem; color: var(--md-text-muted); font-size: 0.82rem; }
         .chart-wrapper { position: relative; width: 100%; max-width: 450px; margin: 0 auto 1.5rem auto; height: 320px; }
         .stats-text-list { background: var(--md-surface-card); border: 1px solid var(--md-border); border-radius: 8px; padding: 16px; margin-bottom: 1.5rem; font-size: 1rem; }
         .stats-text-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--md-border); }
@@ -2873,13 +2877,6 @@ try {
                         <?php endforeach; ?>
                     </select>
 
-                    <select id="statsFilterScore" name="score" onchange="loadStatisticsData()">
-                        <option value="">Alle Scores</option>
-                        <?php foreach ($initialScores as $s): ?>
-                            <option value="<?= htmlspecialchars($s) ?>">Score: <?= htmlspecialchars($s) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-
                     <button type="button" class="btn btn-secondary" onclick="resetStatsFilters()" style="padding: 10px 14px;">Zurücksetzen</button>
                 </form>
 
@@ -2891,6 +2888,13 @@ try {
                 <div class="stats-text-list" id="statsTextList">
                     <div style="text-align: center; color: var(--md-text-muted);">Statistiken werden geladen...</div>
                 </div>
+
+                <h2 style="margin-top: 1.5rem;">Aktiva-Wörter im Zeitverlauf</h2>
+                <p class="stats-chart-note">Wörter, die heute aktiva sind, kumuliert nach dem Datum, an dem sie erstellt wurden.</p>
+                <div class="chart-wrapper chart-wrapper-wide">
+                    <canvas id="aktivaLineChart" aria-label="Kumulierte Anzahl Aktiva-Wörter nach Erstellungsdatum" role="img"></canvas>
+                </div>
+                <p class="stats-chart-note" id="aktivaLineEmpty" style="display: none; text-align: center;">Noch keine Aktiva-Wörter.</p>
             </div>
         </div>
     </div>
@@ -2930,6 +2934,7 @@ let editReturnTraining = null;
 let lastDddWasRight = false;
 let dddStreakCount = 0;
 let statusPieChartInstance = null;
+let aktivaLineChartInstance = null;
 
 let masterWordsList = <?= jsonForScript($initialWords) ?>;
 let editFromListWort = null; // word being edited from the main list, redrawn in place after saving
@@ -3525,7 +3530,6 @@ async function refreshMetadata() {
 
         updateDropdown('statsFilterList', data.lists, 'Alle Listen');
         updateDropdown('statsFilterThema', data.themen, 'Alle Themen');
-        updateDropdown('statsFilterScore', data.scores, 'Alle Scores', 'Score: ');
 
         updateStatsWortartenDropdown();
 
@@ -3666,6 +3670,7 @@ function switchView(viewName, opts = {}) {
             if (statusPieChartInstance) {
                 statusPieChartInstance.resize();
             }
+            if (aktivaLineChartInstance) aktivaLineChartInstance.resize();
         }, 50);
     }
 }
@@ -3694,9 +3699,8 @@ async function loadStatisticsData() {
     const list = document.getElementById('statsFilterList').value;
     const thema = document.getElementById('statsFilterThema').value;
     const wortart = document.getElementById('statsFilterWortart').value;
-    const score = document.getElementById('statsFilterScore').value;
 
-    const url = `index.php?api=get_stats&sharepoint_list=${encodeURIComponent(list)}&thema=${encodeURIComponent(thema)}&wortart=${encodeURIComponent(wortart)}&score=${encodeURIComponent(score)}&_ts=` + Date.now();
+    const url = `index.php?api=get_stats&sharepoint_list=${encodeURIComponent(list)}&thema=${encodeURIComponent(thema)}&wortart=${encodeURIComponent(wortart)}&_ts=` + Date.now();
 
     try {
         const res = await fetch(url, { cache: 'no-store' });
@@ -3704,6 +3708,7 @@ async function loadStatisticsData() {
         if (data.error === 'Unauthorized') { window.location.href = 'login'; return; }
 
         renderStatistics(data.stats);
+        renderAktivaLine(data.aktiva_by_day || []);
     } catch (err) {
         console.error('Fehler beim Laden der Statistiken', err);
     }
@@ -3713,7 +3718,6 @@ function resetStatsFilters() {
     document.getElementById('statsFilterList').value = '';
     document.getElementById('statsFilterThema').value = '';
     document.getElementById('statsFilterWortart').value = '';
-    document.getElementById('statsFilterScore').value = '';
     updateStatsWortartenDropdown();
     loadStatisticsData();
 }
@@ -3795,6 +3799,82 @@ function renderStatistics(stats) {
     });
 }
 
+// Line chart: cumulative number of (today's) aktiva words by creation day, up to today
+function renderAktivaLine(rows) {
+    const empty = document.getElementById('aktivaLineEmpty');
+    const canvas = document.getElementById('aktivaLineChart');
+    if (aktivaLineChartInstance) {
+        aktivaLineChartInstance.destroy();
+        aktivaLineChartInstance = null;
+    }
+    if (!rows.length) {
+        canvas.parentElement.style.display = 'none';
+        empty.style.display = '';
+        return;
+    }
+    canvas.parentElement.style.display = '';
+    empty.style.display = 'none';
+
+    // One point per day from the first creation day to today (local dates, no time zone shift)
+    const perDay = new Map(rows.map(r => [String(r.day).slice(0, 10), parseInt(r.count, 10) || 0]));
+    const toKey = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const [y, m, d] = String(rows[0].day).slice(0, 10).split('-').map(Number);
+    const day = new Date(y, m - 1, d);
+    const todayKey = toKey(new Date());
+    const labels = [], values = [];
+    let total = 0;
+    for (let guard = 0; guard < 20000; guard++) {
+        const key = toKey(day);
+        total += perDay.get(key) || 0;
+        labels.push(day.toLocaleDateString('de-CH', { day: '2-digit', month: '2-digit', year: 'numeric' }));
+        values.push(total);
+        if (key >= todayKey) break;
+        day.setDate(day.getDate() + 1);
+    }
+
+    const color = cssVar('--md-aktiva-green') || '#ec407a';
+    aktivaLineChartInstance = new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [{
+                label: 'Aktiva-Wörter',
+                data: values,
+                borderColor: color,
+                backgroundColor: color,
+                borderWidth: 2,
+                pointRadius: values.length === 1 ? 4 : 0,
+                pointHoverRadius: 5,
+                pointHoverBorderWidth: 2,
+                pointHoverBorderColor: cssVar('--md-surface'),
+                stepped: true,
+                fill: false
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { display: false },
+                tooltip: { callbacks: { label: c => ` ${c.parsed.y} Aktiva-Wörter` } }
+            },
+            scales: {
+                x: {
+                    grid: { display: false },
+                    ticks: { color: cssVar('--md-text-muted'), maxTicksLimit: 6, maxRotation: 0, autoSkip: true }
+                },
+                y: {
+                    beginAtZero: true,
+                    grid: { color: cssVar('--md-border') },
+                    border: { display: false },
+                    ticks: { color: cssVar('--md-text-muted'), precision: 0, maxTicksLimit: 5 }
+                }
+            }
+        }
+    });
+}
+
 // Read a CSS color variable of the current theme (used for Chart.js)
 function cssVar(name) {
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -3806,6 +3886,15 @@ document.addEventListener('themechange', () => {
     statusPieChartInstance.data.datasets[0].borderColor = cssVar('--md-surface');
     statusPieChartInstance.options.plugins.legend.labels.color = cssVar('--md-on-surface');
     statusPieChartInstance.update();
+});
+document.addEventListener('themechange', () => {
+    const c = aktivaLineChartInstance;
+    if (!c) return;
+    c.data.datasets[0].pointHoverBorderColor = cssVar('--md-surface');
+    c.options.scales.x.ticks.color = cssVar('--md-text-muted');
+    c.options.scales.y.ticks.color = cssVar('--md-text-muted');
+    c.options.scales.y.grid.color = cssVar('--md-border');
+    c.update();
 });
 
 // --- CHECKBOX BULK SELECT UTILITIES & STATUS PILL UI ---
