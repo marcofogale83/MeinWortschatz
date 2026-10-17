@@ -143,6 +143,9 @@ function saveWordScore(PDO $pdo, $uid, string $wort, int $newScore): string {
     $newStatus = statusFromScore($newScore);
     $update = $pdo->prepare("UPDATE meine_wortschatz SET Score = ?, Status = ?, Modified = NOW(), NachsteUbungDatum = DATE_ADD(NOW(), INTERVAL ? DAY) WHERE Wort = ? AND user_id = ?");
     $update->execute([$newScore, $newStatus, nextReviewDays($newScore), $wort, $uid]);
+    if ($newStatus === 'aktiva') {
+        syncStarterWords($pdo, (int)$uid); // a new aktiva word can mean a new level
+    }
     return $newStatus;
 }
 
@@ -299,6 +302,88 @@ function buildGameFilter(array $input, bool $requireThema = false): array {
         }
     }
     return [$where, $params];
+}
+
+// ===== Starter words per level =====
+// Active-word thresholds of the levels (same as LEVELS on the page). starter_words.level 1 belongs to the first level (Novize).
+const LEVEL_MINS = [500, 1300, 2500, 4000, 6000, 8000, 10000, 15000];
+
+// When the user reaches a new level: the reached level's starter words become "passiv" (words still waiting
+// in "warteschlange" move up to "passiv"), the next level's words go to "warteschlange".
+// Words the user already has are otherwise never changed. users.starter_level remembers the last level handled.
+function syncStarterWords(PDO $pdo, int $uid): array {
+    $log = [];
+    try {
+        $aktiva = (int)userQuery($pdo, "SELECT COUNT(*) FROM meine_wortschatz WHERE user_id = ? AND Status = 'aktiva'", [$uid])->fetchColumn();
+        // New users start as if they had reached the first level: its words passiv, the next level's in warteschlange
+        $reached = max(1, count(array_filter(LEVEL_MINS, fn($min) => $aktiva >= $min)));
+        $done = (int)userQuery($pdo, "SELECT starter_level FROM users WHERE id = ?", [$uid])->fetchColumn();
+        $log[] = "aktiva: $aktiva, reached level: $reached, starter_level: $done";
+        if ($reached <= $done) {
+            return $log;
+        }
+        // The user's words, compared like MySQL does (ignoring case), so nothing they have is added twice
+        $existing = [];
+        foreach (userQuery($pdo, "SELECT Wort, Score FROM meine_wortschatz WHERE user_id = ?", [$uid])->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $existing[mb_strtolower(trim($row['Wort']), 'UTF-8')] = ['wort' => $row['Wort'], 'score' => (int)$row['Score']];
+        }
+        for ($level = $done + 1; $level <= $reached; $level++) {
+            $log[] = addStarterWords($pdo, $uid, $level, -1, $existing);
+        }
+        if ($reached < count(LEVEL_MINS)) {
+            $log[] = addStarterWords($pdo, $uid, $reached + 1, -2, $existing);
+        }
+        // Remembered only after the words are in, so a failed run is retried on the next page load
+        userQuery($pdo, "UPDATE users SET starter_level = ? WHERE id = ?", [$reached, $uid]);
+    } catch (Throwable $e) {
+        $log[] = 'Error: ' . $e->getMessage();
+        error_log('Starter words failed: ' . $e->getMessage());
+    }
+    return $log;
+}
+
+// Adds one level's starter words with the given score (-1 passiv, -2 warteschlange).
+// Words the user has stay as they are, except words still in warteschlange that now become passiv.
+// Returns a short summary; a word that cannot be saved is skipped and its error kept in the summary.
+function addStarterWords(PDO $pdo, int $uid, int $level, int $score, array &$existing): string {
+    $words = userQuery($pdo, "SELECT Thema, Wort, Artikel, Plural, Übersetzung, synonym, Wortarten, Beispiel, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation
+        FROM starter_words WHERE level = ? ORDER BY idx", [$level])->fetchAll(PDO::FETCH_ASSOC);
+    $insert = $pdo->prepare("INSERT INTO meine_wortschatz (user_id, sharepoint_list, Thema, Wort, Artikel, Plural, Übersetzung, synonym, Wortarten, Beispiel, Score, Status, VerbFlag, Konjugation, grundverb, praefix, praeposition_kollokation)
+        VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    $toPassiv = $pdo->prepare("UPDATE meine_wortschatz SET Score = -1, Status = 'passiv' WHERE user_id = ? AND Wort = ?");
+    $added = $moved = 0;
+    $errors = [];
+    foreach ($words as $w) {
+        $key = mb_strtolower(trim($w['Wort']), 'UTF-8');
+        if ($key === '') {
+            continue;
+        }
+        try {
+            if (isset($existing[$key])) {
+                if ($score === -1 && $existing[$key]['score'] < -1) {
+                    $toPassiv->execute([$uid, $existing[$key]['wort']]);
+                    $existing[$key]['score'] = -1;
+                    $moved++;
+                }
+                continue;
+            }
+            $insert->execute([$uid, (string)$w['Thema'], trim($w['Wort']), (string)$w['Artikel'], (string)$w['Plural'], (string)$w['Übersetzung'], (string)$w['synonym'],
+                (string)$w['Wortarten'], (string)$w['Beispiel'], $score, statusFromScore($score), (int)$w['VerbFlag'], (string)$w['Konjugation'],
+                (string)$w['grundverb'], (string)$w['praefix'], (string)$w['praeposition_kollokation']]);
+            $existing[$key] = ['wort' => trim($w['Wort']), 'score' => $score];
+            $added++;
+        } catch (PDOException $e) {
+            $errors[$e->getMessage()] = $w['Wort'];
+        }
+    }
+    if ($errors) {
+        error_log("Starter words level $level: " . count($errors) . ' error(s), first: ' . array_key_first($errors));
+    }
+    $summary = "level $level (" . statusFromScore($score) . "): " . count($words) . " in starter_words, $added added, $moved moved to passiv";
+    foreach (array_slice($errors, 0, 3, true) as $msg => $wort) {
+        $summary .= " | error on '$wort': $msg";
+    }
+    return $summary;
 }
 
 // The user's grammar level in grammar_levels: the highest anzahl_aktiva_woerter the user has reached,
@@ -961,6 +1046,12 @@ if (isset($_GET['api'])) {
         exit;
     }
 
+    // Check of the starter words for the logged-in user: index.php?api=starter_words_check
+    if ($action === 'starter_words_check') {
+        echo json_encode(['log' => syncStarterWords($pdo, $uid)], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
     if ($action === 'grammar_topics') {
         // All topics for the "leichter / anderes / schwerer" buttons; the ones above the user's level come back locked
         $limit = grammarLevelLimit($pdo, $uid);
@@ -1322,6 +1413,7 @@ try {
 try {
     // Make sure every stored status matches its score (fixes older rows)
     syncStatusesFromScore($pdo, $uid);
+    syncStarterWords($pdo, $uid);
 
     $initialAktivaCount = (int)userQuery($pdo, "SELECT COUNT(*) FROM meine_wortschatz WHERE user_id = ? AND Status = 'aktiva'", [$uid])->fetchColumn();
 
