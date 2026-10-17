@@ -333,6 +333,7 @@ function e(string $s): string {
         .section-description a { color: var(--accent); }
         .neutral-button { background: var(--neutral-btn); color: var(--neutral-btn-text); }
         .neutral-button:hover { background: var(--neutral-btn-hover); }
+        .legal-links { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 24px; }
         .delete-button { background: #c62828; }
         .delete-button:hover { background: #a61f1f; }
         @media (max-width: 520px) {
@@ -444,6 +445,10 @@ function e(string $s): string {
             <a href="datenschutz">Datenschutzerklärung</a>.
         </p>
         <p><a class="submit-button neutral-button" href="./?api=export_csv">📥 Wortliste als CSV herunterladen</a></p>
+        <div class="legal-links">
+            <a class="submit-button neutral-button" href="datenschutz">🔒 Datenschutz</a>
+            <a class="submit-button neutral-button" href="impressum">ℹ️ Impressum</a>
+        </div>
 
         <h2>Konto löschen</h2>
         <p class="section-description">

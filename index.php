@@ -2264,8 +2264,6 @@ try {
                         </div>
                         <a class="account-menu-item" href="profil"><span class="menu-ico"><img class="menu-brain" id="menuLevelBrain" alt=""></span>Mein Profil<span class="menu-lvl" id="menuLevelName"></span></a>
                         <a class="account-menu-item" href="./?api=export_csv">📥 CSV exportieren</a>
-                        <a class="account-menu-item" href="datenschutz">🔒 Datenschutz</a>
-                        <a class="account-menu-item" href="impressum">ℹ️ Impressum</a>
                         <a class="account-menu-item account-menu-logout" href="logout">↪ Abmelden</a>
                         </div>
                     </div>
