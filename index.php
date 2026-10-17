@@ -3550,8 +3550,8 @@ const LEVELS = [
     { name: 'Novize',            min: 500 },
     { name: 'Praktiker',         min: 1300 },
     { name: 'Fortgeschrittener', min: 2500 },
-    { name: 'Experte',           min: 4000 },
-    { name: 'Kenner',           min: 6000 },
+    { name: 'Kenner',            min: 4000 },
+    { name: 'Experte',          min: 6000 },
     { name: 'Spezialist',        min: 8000 },
     { name: 'Meister',          min: 10000 },
     { name: 'Virtuose',          min: 15000 }
