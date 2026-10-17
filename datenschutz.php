@@ -58,7 +58,7 @@ $L = $LEGAL;
 
         <h3>2.4 KI-Funktionen (Abo KI und KI Plus)</h3>
         <p>
-            Wenn Sie eine KI-Funktion auslösen (zum Beispiel «Mit KI ausfüllen», Satzprüfung oder Deutsch Meister),
+            Wenn Sie eine KI-Funktion auslösen (zum Beispiel «Mit KI ausfüllen», Satzprüfung oder Grammatik-Challenge),
             senden wir das betreffende Wort und gegebenenfalls den von Ihnen geschriebenen Satz an Infomaniak
             (Sprachmodell, Schweiz). Bei der Bildgenerierung (KI Plus) senden wir das Wort und eine Bildbeschreibung an
             Google. Ihr Name, Ihre E-Mail-Adresse und Ihre Kontokennung werden dabei nicht übermittelt. Bitte

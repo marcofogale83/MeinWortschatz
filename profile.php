@@ -444,10 +444,10 @@ function e(string $s): string {
             Sie können Ihre Wortliste jederzeit herunterladen. Welche Daten wir speichern, steht in der
             <a href="datenschutz">Datenschutzerklärung</a>.
         </p>
-        <p><a class="submit-button neutral-button" href="./?api=export_csv">📥 Wortliste als CSV herunterladen</a></p>
+        <p><a class="submit-button neutral-button" href="./?api=export_csv">Wortliste als CSV herunterladen</a></p>
         <div class="legal-links">
-            <a class="submit-button neutral-button" href="datenschutz">🔒 Datenschutz</a>
-            <a class="submit-button neutral-button" href="impressum">ℹ️ Impressum</a>
+            <a class="submit-button neutral-button" href="datenschutz">Datenschutz</a>
+            <a class="submit-button neutral-button" href="impressum">Impressum</a>
         </div>
 
         <h2>Konto löschen</h2>

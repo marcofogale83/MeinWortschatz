@@ -26,6 +26,7 @@ session_start();
 require_once 'db.php';
 require_once 'theme.php';
 require_once 'user_settings.php';
+require_once 'content_filter.php';
 
 // --- CURRENT USER: every vocabulary query is scoped to this ID ---
 $uid = (int)($_SESSION['user_id'] ?? 0);
@@ -51,7 +52,7 @@ if ($isLoggedIn) {
 $translationLangs = $isLoggedIn ? getTranslationLanguages($pdo, $uid) : DEFAULT_TRANSLATION_LANGUAGES;
 $translationLangNames = languageNames($translationLangs ?? DEFAULT_TRANSLATION_LANGUAGES);
 
-// 'llm' = text AI (fill word, sentence checks, Deutsch Meister), 'image' = image generation
+// 'llm' = text AI (fill word, sentence checks, Grammatik-Challenge), 'image' = image generation
 function planAllows(string $plan, string $feature): bool {
     if ($feature === 'llm') return $plan === 'ai' || $plan === 'ai_full';
     if ($feature === 'image') return $plan === 'ai_full';
@@ -300,6 +301,51 @@ function buildGameFilter(array $input, bool $requireThema = false): array {
     return [$where, $params];
 }
 
+// The user's grammar level in grammar_levels: the highest anzahl_aktiva_woerter the user has reached,
+// or the first level while below it. Topics up to this threshold are open to the user. Null when the table is missing or empty.
+function grammarLevelLimit(PDO $pdo, int $uid): ?int {
+    try {
+        $aktiva = (int)userQuery($pdo, "SELECT COUNT(*) FROM meine_wortschatz WHERE user_id = ? AND Status = 'aktiva'", [$uid])->fetchColumn();
+        $stmt = $pdo->prepare("SELECT COALESCE(
+                (SELECT MAX(anzahl_aktiva_woerter) FROM grammar_levels WHERE anzahl_aktiva_woerter <= ?),
+                (SELECT MIN(anzahl_aktiva_woerter) FROM grammar_levels))");
+        $stmt->execute([$aktiva]);
+        $limit = $stmt->fetchColumn();
+        return $limit === null || $limit === false ? null : (int)$limit;
+    } catch (Throwable $e) {
+        error_log('Grammar level lookup failed: ' . $e->getMessage());
+        return null;
+    }
+}
+
+// A random topic of the user's own level
+function pickGrammarTopic(PDO $pdo, int $uid): ?array {
+    $limit = grammarLevelLimit($pdo, $uid);
+    if ($limit === null) {
+        return null;
+    }
+    try {
+        $stmt = $pdo->prepare("SELECT id, niveau, anzahl_aktiva_woerter, grammatik_thema, beispielsatz FROM grammar_levels WHERE anzahl_aktiva_woerter = ? ORDER BY RAND() LIMIT 1");
+        $stmt->execute([$limit]);
+        return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    } catch (Throwable $e) {
+        return null;
+    }
+}
+
+function grammarTopicById(PDO $pdo, int $id): ?array {
+    if ($id <= 0) {
+        return null;
+    }
+    try {
+        $stmt = $pdo->prepare("SELECT id, niveau, anzahl_aktiva_woerter, grammatik_thema, beispielsatz FROM grammar_levels WHERE id = ?");
+        $stmt->execute([$id]);
+        return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    } catch (Throwable $e) {
+        return null;
+    }
+}
+
 // Pick a random word from the top of the review queue that matches the game settings.
 // $extraWhere restricts the pool further (also applied to the fallback when no word matches the filters).
 function pickGameWord(PDO $pdo, int $uid, array $input, string $extraWhere = ''): array {
@@ -459,6 +505,7 @@ if (isset($_GET['api'])) {
     $planFeatureByAction = [
         'ai_fill_word' => 'llm',
         'deutsch_meister_next' => 'llm',
+        'grammar_topics' => 'llm',
         'deutsch_meister_check_sentence' => 'llm',
         'der_die_das_check_sentence' => 'llm',
         'check_sentence_booster' => 'llm',
@@ -759,6 +806,16 @@ if (isset($_GET['api'])) {
             echo json_encode(['success' => false, 'message' => 'Das Wort darf nicht leer sein.']);
             exit;
         }
+        foreach ([$wort, $sharepointList, $thema, $artikel, $plural, $uebersetzung, $synonym, $wortarten, $beispiel, $konjugation, $grundverb, $praefix, $praeposition_kollokation] as $field) {
+            if (containsBlockedWord((string)$field)) {
+                echo json_encode(['success' => false, 'message' => FILTER_MESSAGE_OFFENSIVE]);
+                exit;
+            }
+        }
+        if (!looksLikeGermanScript($wort)) {
+            echo json_encode(['success' => false, 'message' => FILTER_MESSAGE_NOT_GERMAN]);
+            exit;
+        }
 
         try {
         // Current score: 0 for a new word, the stored one when editing
@@ -827,6 +884,14 @@ if (isset($_GET['api'])) {
             echo json_encode(['success' => false, 'error' => 'Bitte gib zuerst ein Wort ein.']);
             exit;
         }
+        if (containsBlockedWord($wort)) {
+            echo json_encode(['success' => false, 'error' => FILTER_MESSAGE_OFFENSIVE]);
+            exit;
+        }
+        if (!looksLikeGermanScript($wort)) {
+            echo json_encode(['success' => false, 'error' => FILTER_MESSAGE_NOT_GERMAN]);
+            exit;
+        }
 
         $userPrompt = "Analysiere das deutsche Wort '$wort' und antworte AUSSCHLIESSLICH als gültiges JSON-Objekt mit exakt diesen Schlüsseln:\n" .
                     "{\n" .
@@ -842,7 +907,8 @@ if (isset($_GET['api'])) {
                     "  \"uebersetzung\": \"" . implode(', ', array_map(fn($l) => "$l: ...", $translationLangNames)) . "\",\n" .
                     "  \"synonym\": \"Synonym auf Deutsch (oder leer)\",\n" .
                     "  \"beispiel\": \"Beispielsatz auf Deutsch und Übersetzung auf " . $translationLangNames[0] . "\"\n" .
-                    "}";
+                    "}\n" . AI_MODERATION_PROMPT .
+                    "Für 'ist_deutsch' zählt hier, ob '$wort' ein deutsches Wort oder ein im Deutschen gebräuchliches Anglizismus ist.";
 
         $ai = callAi($userPrompt);
         if (!$ai['ok']) {
@@ -851,7 +917,9 @@ if (isset($_GET['api'])) {
         }
 
         $parsedData = parseAiJson($ai['content']);
-        if (!$parsedData) {
+        if ($blocked = aiModerationError($parsedData)) {
+            echo json_encode(['success' => false, 'error' => $blocked]);
+        } elseif (!$parsedData) {
             echo json_encode(['success' => true, 'raw' => $ai['content']]);
         } else {
             echo json_encode(['success' => true, 'ai_data' => $parsedData]);
@@ -870,11 +938,27 @@ if (isset($_GET['api'])) {
         exit;
     }
 
+    if ($action === 'grammar_topics') {
+        // All topics for the "leichter / anderes / schwerer" buttons; the ones above the user's level come back locked
+        $limit = grammarLevelLimit($pdo, $uid);
+        $topics = [];
+        if ($limit !== null) {
+            $rows = $pdo->query("SELECT id, niveau, anzahl_aktiva_woerter, grammatik_thema, beispielsatz FROM grammar_levels ORDER BY anzahl_aktiva_woerter, id")->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($rows as $r) {
+                $r['locked'] = (int)$r['anzahl_aktiva_woerter'] > $limit;
+                $topics[] = $r;
+            }
+        }
+        echo json_encode(['success' => true, 'topics' => $topics]);
+        exit;
+    }
+
     if ($action === 'deutsch_meister_next') {
-        [$word, $notice] = pickGameWord($pdo, $uid, jsonInput());
+        $input = jsonInput();
+        [$word, $notice] = pickGameWord($pdo, $uid, $input);
 
         if ($word) {
-            echo json_encode(['success' => true, 'word' => $word, 'notice' => $notice]);
+            echo json_encode(['success' => true, 'word' => $word, 'grammar' => pickGrammarTopic($pdo, $uid), 'notice' => $notice]);
         } else {
             echo json_encode(['success' => false, 'error' => 'Keine Wörter gefunden.']);
         }
@@ -885,23 +969,35 @@ if (isset($_GET['api'])) {
         $input = jsonInput();
         $sentence = trim($input['sentence'] ?? '');
         $word = trim($input['word'] ?? '');
+        $topic = grammarTopicById($pdo, (int)($input['grammar_id'] ?? 0));
+        if ($topic && (int)$topic['anzahl_aktiva_woerter'] > (int)grammarLevelLimit($pdo, $uid)) {
+            $topic = null;
+        }
 
         if (empty($sentence) || empty($word)) {
             echo json_encode(['success' => false, 'error' => 'Satz oder Wort fehlt.']);
             exit;
         }
+        if (containsBlockedWord($sentence)) {
+            echo json_encode(['success' => true, 'evaluation_result' => 'blocked', 'feedback' => FILTER_MESSAGE_OFFENSIVE]);
+            exit;
+        }
 
-        $userPrompt = "Überprüfe den folgenden Beispielsatz für das deutsche Wort '$word'.\n" .
-                    "Beispielsatz: '$sentence'\n\n" .
-                    "Bewerte nach folgenden Kriterien:\n" .
-                    "1. Ist der Satz grammatikalisch und inhaltlich im perfekten Kontext ('ok')?\n" .
-                    "2. Ist der Satz nur falsch aus der Grammatik-Perspektive ('grammar_wrong')?\n" .
-                    "3. Wurde das vorgeschlagene Wort in einem völlig falschen Kontext verwendet ('wrong_context')?\n\n" .
-                    "Antworte AUSSCHLIESSLICH als gültiges JSON-Objekt mit exakt diesen Schlüsseln:\n" .
-                    "{\n" .
-                    "  \"evaluation_result\": \"ok\" oder \"grammar_wrong\" oder \"wrong_context\",\n" .
-                    "  \"feedback\": \"Deine Korrektur oder Erklärung auf Deutsch\"\n" .
-                    "}";
+        $grammarPart = $topic
+            ? "Das verlangte Grammatikthema ist: '{$topic['grammatik_thema']}' (Beispiel: '{$topic['beispielsatz']}').\n"
+            : '';
+        $userPrompt = "Ein Deutschlernender soll einen Satz mit dem deutschen Wort '$word' schreiben" . ($topic ? " und dabei ein Grammatikthema anwenden" : "") . ".\n" .
+                    $grammarPart .
+                    "Satz des Nutzers: <<<$sentence>>>\n\n" .
+                    "Bewerte:\n" .
+                    "1. \"satz_korrekt\": true, wenn der Satz grammatikalisch und inhaltlich korrekt ist, sonst false.\n" .
+                    "2. \"wort_verwendet\": true, wenn das Wort '$word' (auch gebeugt oder konjugiert) sinnvoll im Satz vorkommt, sonst false.\n" .
+                    "3. \"grammatik_beleg\": zitiere die Wörter im Satz, die das Grammatikthema zeigen (z.B. bei 'Personalpronomen im Nominativ' das Pronomen 'ich' als Subjekt), oder leer, wenn keine vorkommen.\n" .
+                    "4. \"grammatik_verwendet\": true, wenn grammatik_beleg nicht leer ist und das Thema dort richtig angewendet wird" . ($topic ? "" : " (ohne Grammatikthema immer true)") . ", sonst false. " .
+                    "Es genügt, wenn das Thema mindestens einmal richtig vorkommt; andere Formen und Satzteile im selben Satz sind erlaubt und kein Grund für false.\n" .
+                    "5. \"feedback\": kurze Erklärung auf Deutsch (2-3 Sätze), passend zu deinen Bewertungen, bei Fehlern mit dem korrigierten Satz.\n\n" .
+                    "Antworte AUSSCHLIESSLICH als gültiges JSON-Objekt mit den Schlüsseln satz_korrekt, wort_verwendet, grammatik_beleg, grammatik_verwendet, feedback, ist_deutsch, unangemessen (in dieser Reihenfolge).\n" .
+                    AI_MODERATION_PROMPT;
 
         $ai = callAi($userPrompt);
         if (!$ai['ok']) {
@@ -910,14 +1006,22 @@ if (isset($_GET['api'])) {
         }
 
         $parsedData = parseAiJson($ai['content']);
-        $evalResult = 'grammar_wrong';
-        $feedback = "";
+        if ($blocked = aiModerationError($parsedData)) {
+            echo json_encode(['success' => true, 'evaluation_result' => $blocked === FILTER_MESSAGE_OFFENSIVE ? 'blocked' : 'not_german', 'feedback' => $blocked]);
+            exit;
+        }
 
-        if ($parsedData && isset($parsedData['evaluation_result'])) {
-            $evalResult = $parsedData['evaluation_result'];
-            $feedback = $parsedData['feedback'] ?? '';
+        $isTrue = fn($v) => $v === true || in_array(strtolower(trim((string)$v)), ['true', 'ja', '1'], true);
+        $correct = $parsedData ? $isTrue($parsedData['satz_korrekt'] ?? false) : false;
+        $usesWord = $parsedData ? $isTrue($parsedData['wort_verwendet'] ?? false) : false;
+        $usesGrammar = !$topic || ($parsedData && $isTrue($parsedData['grammatik_verwendet'] ?? false));
+        $feedback = $parsedData ? (string)($parsedData['feedback'] ?? '') : $ai['content'];
+
+        // perfect / no_grammar / no_word / wrong_with_word / wrong
+        if ($correct) {
+            $evalResult = !$usesWord ? 'no_word' : (!$usesGrammar ? 'no_grammar' : 'perfect');
         } else {
-            $feedback = $ai['content'];
+            $evalResult = $usesWord ? 'wrong_with_word' : 'wrong';
         }
 
         $stmt = $pdo->prepare("SELECT Score, Status FROM meine_wortschatz WHERE Wort = ? AND user_id = ?");
@@ -925,20 +1029,22 @@ if (isset($_GET['api'])) {
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         $isAktiva = $row && statusFromScore((int)$row['Score']) === 'aktiva';
 
+        // The word counts as practised when the sentence is correct and uses it (with or without the grammar topic)
+        $wordUsedWell = in_array($evalResult, ['perfect', 'no_grammar'], true);
         $points = 0;
         if (!$isAktiva) {
             // Words that are not aktiva yet: +1 for a correct sentence, nothing otherwise
-            $points = ($evalResult === 'ok') ? 1 : 0;
-        } elseif ($evalResult === 'ok') {
+            $points = $wordUsedWell ? 1 : 0;
+        } elseif ($wordUsedWell) {
             $letterCount = mb_strlen($sentence);
             if ($letterCount <= 21) {
                 $points = 9;
             } else {
                 $points = (int)ceil($letterCount / 3);
             }
-        } elseif ($evalResult === 'wrong_context') {
+        } elseif ($evalResult === 'wrong') {
             $points = -1;
-        } else {
+        } elseif ($evalResult === 'wrong_with_word') {
             $points = 1;
         }
 
@@ -1032,9 +1138,13 @@ if (isset($_GET['api'])) {
             echo json_encode(['success' => false, 'error' => 'Satz oder Wort fehlt.']);
             exit;
         }
+        if (containsBlockedWord($sentence)) {
+            echo json_encode(['success' => false, 'error' => FILTER_MESSAGE_OFFENSIVE]);
+            exit;
+        }
 
         $userPrompt = "Überprüfe den folgenden Beispielsatz für das Wort '$word'.\n" .
-                    "Beispielsatz: '$sentence'\n\n" .
+                    "Beispielsatz: <<<$sentence>>>\n\n" .
                     "Bewerte nach folgenden Kriterien:\n" .
                     "1. Ist der Satz grammatikalisch korrekt?\n" .
                     "2. Ist der Satz idiomatischer Natur oder nur verständlich, aber nicht perfekt idiomatisch?\n\n" .
@@ -1043,7 +1153,7 @@ if (isset($_GET['api'])) {
                     "  \"is_grammatically_correct\": true/false,\n" .
                     "  \"is_idiomatically_correct\": true/false,\n" .
                     "  \"feedback\": \"Deine kurze Rückmeldung oder Korrektur auf Deutsch\"\n" .
-                    "}";
+                    "}\n" . AI_MODERATION_PROMPT;
 
         $ai = callAi($userPrompt);
         if (!$ai['ok']) {
@@ -1052,6 +1162,10 @@ if (isset($_GET['api'])) {
         }
 
         $parsedData = parseAiJson($ai['content']);
+        if ($blocked = aiModerationError($parsedData)) {
+            echo json_encode(['success' => false, 'error' => $blocked]);
+            exit;
+        }
         $isGrammaticallyCorrect = false;
         $isIdiomaticallyCorrect = false;
         $feedbackMessage = "";
@@ -1424,11 +1538,56 @@ try {
         .header-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
         .back-icon {
             display: inline-grid; place-items: center; flex-shrink: 0;
-            width: 40px; height: 40px; padding: 0; border: 0; border-radius: 50%;
-            background: transparent; color: var(--md-text-muted); cursor: pointer;
+            width: 48px; height: 48px; padding: 0; border: 1px solid var(--md-border); border-radius: 50%;
+            background: var(--md-surface-card); color: var(--md-accent-text); cursor: pointer;
             transition: background-color 0.15s, color 0.15s;
         }
-        .back-icon svg { width: 22px; height: 22px; }
+        .back-icon svg { width: 30px; height: 30px; }
+        /* Der-Die-Das: the word sits on a card that slides out to the right while the next one comes in from the left;
+           the result box fades, and hidden parts keep their space so nothing jumps */
+        .ddd-card-track { overflow: hidden; padding: 6px 4px 14px; margin-top: 10px; }
+        .ddd-word-card {
+            text-align: center; padding: 18px 14px 10px; min-height: 120px;
+            display: flex; flex-direction: column; justify-content: center;
+            background: var(--md-surface-card); border: 1px solid var(--md-border); border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            transition: transform 0.3s ease-in;
+        }
+        .ddd-word-card.ddd-slide-out { transform: translateX(110%); }
+        .ddd-word-card.ddd-slide-in-start { transform: translateX(-110%); transition: none; }
+        .ddd-word-card.ddd-slide-in { transition: transform 0.3s ease-out; }
+        #dddFeedbackContainer { transition: opacity 0.25s ease; }
+        .ddd-faded { opacity: 0; }
+        /* Grammatik-Challenge: one task card with the word on top and the grammar topic below */
+        .dm-task {
+            margin: 6px 0 0; padding: 22px 18px 16px; text-align: center;
+            background: var(--md-surface-card); border: 1px solid var(--md-border); border-radius: 14px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+        .dm-word { margin: 0 0 4px; color: var(--md-on-surface); }
+        .dm-topic { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--md-border); }
+        .dm-topic-head { display: inline-flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; max-width: 100%; }
+        .dm-topic-ico { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--md-control-hover); color: var(--md-accent-text); flex-shrink: 0; }
+        .dm-topic-ico svg { width: 17px; height: 17px; }
+        .dm-topic-head strong { color: var(--md-accent-text); font-size: 1.05rem; line-height: 1.3; }
+        .dm-topic-level { padding: 2px 9px; border-radius: 999px; border: 1px solid var(--md-border); font-size: 0.72rem; font-weight: 700; color: var(--md-text-muted); }
+        .dm-topic-example { margin: 6px 0 0; font-size: 0.9rem; color: var(--md-text-muted); font-style: italic; }
+        .dm-topic-example:empty { display: none; }
+        .dm-topic-switch { display: inline-flex; margin-top: 14px; border: 1px solid var(--md-border); border-radius: 999px; overflow: hidden; }
+        .dm-topic-switch button {
+            display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border: 0; background: transparent;
+            color: var(--md-text-muted); font: inherit; font-size: 0.82rem; font-weight: 600; cursor: pointer;
+        }
+        .dm-topic-switch button + button { border-left: 1px solid var(--md-border); }
+        .dm-topic-switch button svg { width: 15px; height: 15px; }
+        .dm-topic-switch button:hover:not(:disabled) { background: var(--md-control-hover); color: var(--md-accent-text); }
+        .dm-topic-switch button:disabled { opacity: 0.35; cursor: default; }
+        @media (max-width: 480px) {
+            .dm-task { padding: 18px 12px 14px; }
+            .dm-topic-switch { display: flex; width: 100%; }
+            .dm-topic-switch button { flex: 1 1 0; justify-content: center; padding: 7px 4px; }
+        }
+        #dddFeedbackContainer.ddd-faded { visibility: hidden; transition: opacity 0.25s ease, visibility 0s linear 0.25s; }
         .back-icon:hover { background: var(--md-control-hover); color: var(--md-accent-text); }
         .back-icon:focus-visible { outline: 2px solid var(--md-accent-text); outline-offset: 2px; }
         @media (max-width: 600px) {
@@ -1470,7 +1629,8 @@ try {
             box-shadow: var(--md-elevation-1);
         }
         .tracker-info { display: flex; align-items: center; gap: 12px; }
-        .tracker-icon { font-size: 2rem; }
+        .tracker-icon { display: inline-grid; place-items: center; width: 2.4rem; height: 2.4rem; flex-shrink: 0; color: var(--md-accent-text); }
+        .tracker-icon svg { width: 100%; height: 100%; }
         .tracker-text h3 { margin: 0; font-size: 1rem; color: var(--md-on-surface); }
         .tracker-text p { margin: 2px 0 0 0; font-size: 0.85rem; color: var(--md-text-muted); }
         .tracker-progress-bar {
@@ -1501,6 +1661,11 @@ try {
         }
         form input:focus, form select:focus, form textarea:focus {
             outline: none; border-color: var(--md-primary); box-shadow: 0 0 0 3px rgba(30, 136, 229, 0.25);
+        }
+        /* Sentence fields: room for a full sentence, more on phones (16px also stops iOS from zooming in) */
+        #Beispiel, #userSentenceInput, #dmUserSentence { min-height: 6.5em; line-height: 1.45; }
+        @media (max-width: 600px) {
+            #Beispiel, #userSentenceInput, #dmUserSentence { min-height: 11em; font-size: 16px; }
         }
 
         .form-group-section {
@@ -1664,8 +1829,10 @@ try {
 
         .view { display: none; }
         .view.active { display: block; }
-        .form-container { display: none; margin-bottom: 1.5rem; }
+        .form-container { display: none; max-width: 800px; margin: 0 auto 1.5rem; }
         .form-container.active { display: block; }
+        /* The word form opens like its own page: everything else on the main page is hidden meanwhile */
+        #dashboard-view.form-open > :not(#formContainer):not(#alertBox) { display: none; }
         .form-toggle-bar { margin-bottom: 1.2rem; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
         @media (max-width: 600px) {
             .form-toggle-bar { flex-direction: column; align-items: stretch; gap: 10px; }
@@ -1851,7 +2018,7 @@ try {
         @media (max-width: 480px) { .mode-tile { font-size: 0.8rem; padding: 12px 4px; } }
         /* Features not included in the user's plan: visible but locked */
         .plan-locked { opacity: 0.55; }
-        .plan-locked::after { content: ' 🔒'; }
+        .plan-locked::after { content: ""; display: inline-block; width: 0.9em; height: 0.9em; margin-left: 0.35em; vertical-align: -0.1em; background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5' y='11' width='14' height='10' rx='2'/%3E%3Cpath d='M8 11V7a4 4 0 0 1 8 0v4'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5' y='11' width='14' height='10' rx='2'/%3E%3Cpath d='M8 11V7a4 4 0 0 1 8 0v4'/%3E%3C/svg%3E") center / contain no-repeat; }
         .mode-tile.plan-locked { position: relative; }
         .mode-tile.plan-locked::after { position: absolute; top: 6px; right: 8px; font-size: 0.8rem; }
         #gameSetupCard .settings-fieldset { border-radius: 12px; }
@@ -2047,7 +2214,6 @@ try {
         /* Filter sheet content */
         .filter-group { padding: 4px 0 14px; border-bottom: 1px solid var(--md-border); margin-bottom: 12px; }
         .sheet-body .filter-group:last-child { border-bottom: 0; margin-bottom: 0; padding-bottom: 4px; }
-        .filter-group-title { margin: 0 0 10px; font-size: 0.85rem; font-weight: 600; color: var(--md-text-muted); }
         .filter-grid { display: grid; grid-template-columns: 1fr; gap: 10px; }
         .filter-field { display: flex; flex-direction: column; gap: 4px; margin: 0; font-size: 0.8rem; color: var(--md-text-muted); }
         .filter-field select { width: 100%; min-height: 44px; margin-bottom: 0; padding: 10px; font-size: 16px; }
@@ -2224,7 +2390,7 @@ try {
         <h3 style="margin-top:0; color: var(--md-accent-text);" id="modalTitle">Auflösung</h3>
         <div id="modalThemaText" style="margin: 16px 0; font-size: 0.95rem; line-height: 1.6; text-align: left;"></div>
         <div id="modalActionButtons" style="display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap;"></div>
-        <button type="button" class="btn" onclick="closeThemaModal()" style="width: 100%;">Weiter 🚀</button>
+        <button type="button" class="btn" onclick="closeThemaModal()" style="width: 100%;">Weiter</button>
     </div>
 </div>
 
@@ -2263,8 +2429,8 @@ try {
                             <span class="account-menu-plan">Abo: <span id="menuPlanName"><?= htmlspecialchars(['free' => 'Gratis', 'ai' => 'KI', 'ai_full' => 'KI Plus'][$subscription] ?? 'Gratis', ENT_QUOTES, 'UTF-8') ?></span></span>
                         </div>
                         <a class="account-menu-item" href="profil"><span class="menu-ico"><img class="menu-brain" id="menuLevelBrain" alt=""></span>Mein Profil<span class="menu-lvl" id="menuLevelName"></span></a>
-                        <a class="account-menu-item" href="./?api=export_csv">📥 CSV exportieren</a>
-                        <a class="account-menu-item account-menu-logout" href="logout">↪ Abmelden</a>
+                        <a class="account-menu-item" href="./?api=export_csv">CSV exportieren</a>
+                        <a class="account-menu-item account-menu-logout" href="logout">Abmelden</a>
                         </div>
                     </div>
                 </details>
@@ -2273,7 +2439,7 @@ try {
 
         <div class="daily-tracker" id="dailyTrackerWidget">
             <div class="tracker-info">
-                <div class="tracker-icon" id="trackerIcon">😴</div>
+                <div class="tracker-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="0.8"/></svg></div>
                 <div class="tracker-text">
                     <h3 id="trackerTitle">Tagesziel: 0 / 100 Wörter</h3>
                     <p id="trackerSubtitle">Fangen wir mit dem Wiederholen an!</p>
@@ -2293,8 +2459,15 @@ try {
         </div>
 
         <div class="form-container" id="formContainer">
+            <header>
+                <div class="header-title">
+                    <button type="button" class="back-icon" onclick="cancelWordForm()" title="Zurück" aria-label="Zurück">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+                    </button>
+                    <h1 id="formTitle">Neues Wort hinzufügen</h1>
+                </div>
+            </header>
             <div class="card">
-                <h2 id="formTitle">Neues Wort hinzufügen</h2>
                 <form id="wordForm" onsubmit="submitWordForm(event)">
                     <input type="hidden" id="original_wort" name="original_wort">
 
@@ -2405,7 +2578,6 @@ try {
                             </div>
                             <div class="sheet-body">
                             <section class="filter-group">
-                                <h3 class="filter-group-title">🔤 Anfangsbuchstabe</h3>
                                 <div class="alphabet-bar" id="alphabetBar">
                                     <button type="button" class="alphabet-btn active" onclick="setLetterFilter('')">Alle</button>
                                     <button type="button" class="alphabet-btn" onclick="setLetterFilter('A')">A</button>
@@ -2441,7 +2613,6 @@ try {
                             </section>
 
                             <section class="filter-group">
-                                <h3 class="filter-group-title">🗂️ Kategorien</h3>
                                 <div class="filter-grid">
                                 <label class="filter-field">
                                     <span>Persönliche Liste</span>
@@ -2474,7 +2645,6 @@ try {
                             </section>
 
                             <section class="filter-group">
-                                <h3 class="filter-group-title">📈 Status</h3>
                                 <div class="filter-grid">
                                 <label class="filter-field">
                                     <span>Status</span>
@@ -2489,7 +2659,6 @@ try {
                             </section>
 
                             <section class="filter-group">
-                                <h3 class="filter-group-title">🔧 Verben</h3>
                                 <div class="filter-grid">
                                 <label class="filter-field">
                                     <span>Verbtyp</span>
@@ -2601,7 +2770,7 @@ try {
                     <button type="button" class="back-icon" onclick="switchView('dashboard')" title="Zurück zum Dashboard" aria-label="Zurück zum Dashboard">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
                     </button>
-                    <h1><span class="h-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg></span>Vokabeltraining</h1>
+                    <h1><span class="h-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg></span><span id="gameViewTitle">Vokabeltraining</span></h1>
                 </div>
             </header>
 
@@ -2617,12 +2786,12 @@ try {
                     <div class="mode-tiles" role="radiogroup" aria-label="Trainingsmodus">
                         <button type="button" class="mode-tile active" data-mode="standard" role="radio" aria-checked="true" onclick="pickGameMode(this)"><span class="mode-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="14" height="15" rx="2"/><path d="M7 3h12a2 2 0 0 1 2 2v12"/></svg></span><span>Karteikarten</span></button>
                         <button type="button" class="mode-tile" data-mode="der_die_das" role="radio" aria-checked="false" onclick="pickGameMode(this)"><span class="mode-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h10M4 17h6"/><circle cx="18" cy="17" r="3"/></svg></span><span>Der-Die-Das</span></button>
-                        <button type="button" class="mode-tile" data-mode="deutsch_meister" role="radio" aria-checked="false" onclick="pickGameMode(this)"><span class="mode-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l4.5 4L12 4l4.5 7L21 7l-2 12H5z"/></svg></span><span>Deutsch Meister</span></button>
+                        <button type="button" class="mode-tile" data-mode="deutsch_meister" role="radio" aria-checked="false" onclick="pickGameMode(this)"><span class="mode-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l4.5 4L12 4l4.5 7L21 7l-2 12H5z"/></svg></span><span>Grammatik-Challenge</span></button>
                     </div>
                     <select id="gameModeSelect" name="game_mode" hidden onchange="onGameModeChange()">
                         <option value="standard">Karteikarten</option>
                         <option value="der_die_das">Der-Die-Das Training</option>
-                        <option value="deutsch_meister">Deutsch Meister</option>
+                        <option value="deutsch_meister">Grammatik-Challenge</option>
                     </select>
 
                     <!-- Status Selection moved right under game selection with Modern Pill UI -->
@@ -2742,7 +2911,7 @@ try {
                         <div id="sentenceWriterContainer" style="display: none; margin-top: 10px;">
                             <label for="userSentenceInput" style="font-size: 0.9rem; font-weight: 500; margin-bottom: 6px;">Schreibe einen Satz mit diesem Wort:</label>
                             <textarea id="userSentenceInput" rows="5" placeholder="z.B. Ich benutze dieses Wort..." style="width: 100%; max-width: 100%; margin-bottom: 8px; resize: vertical;"></textarea>
-                            <button type="button" class="btn btn-success" onclick="checkStandardSentenceBooster()" style="width: 100%;">Satz prüfen & Booster holen 🚀</button>
+                            <button type="button" class="btn btn-success" onclick="checkStandardSentenceBooster()" style="width: 100%;">Satz prüfen</button>
                         </div>
 
                         <div id="aiCorrectionResult" style="display: none; background: var(--md-surface); border: 1px solid var(--md-border); padding: 12px; border-radius: 8px; font-size: 0.95rem; width: 100%; margin-top: 8px;">
@@ -2751,7 +2920,7 @@ try {
                     </div>
 
                     <div class="rate-group game-rate-group" role="group" aria-label="Kenntnisse bewerten">
-                        <button type="button" class="rate-btn r-direkt-aktiv" id="directPromoteContainer" onclick="directPromoteCurrentWord()" title="Direkt aktiv (Score 10)"><span class="rate-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 13l5-5 5 5M7 19l5-5 5 5"/></svg></span><span>direkt aktiv</span></button>
+                        <button type="button" class="rate-btn r-direkt-aktiv" id="directPromoteContainer" onclick="directPromoteCurrentWord()" title="Direkt aktiv"><span class="rate-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 13l5-5 5 5M7 19l5-5 5 5"/></svg></span><span>direkt aktiv</span></button>
                         <?php foreach (RATE_OPTIONS as [$rKey, $rClass, $rIcon, $rLabel]): ?>
                             <button type="button" class="rate-btn <?= $rClass ?>" onclick="submitGameAnswer('<?= $rKey ?>')" title="<?= $rLabel ?>"><span class="rate-icon" aria-hidden="true"><?= $rIcon ?></span><span><?= $rLabel ?></span></button>
                         <?php endforeach; ?>
@@ -2768,19 +2937,27 @@ try {
             <!-- Deutsch Meister Game Card -->
             <div id="deutschMeisterPlayCard" style="display: none;">
                 <div class="card">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 8px;">
-                        <h2 style="margin: 0;"><span class="h-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8l4.5 4 4.5-7 4.5 7L21 8l-2 11H5z"/></svg></span>Deutsch Meister</h2>
-                    </div>
-                    <p style="text-align: center; color: var(--md-text-muted); font-size: 0.9rem; margin-bottom: 1.5rem;">Schreibe einen Beispielsatz mit dem vorgeschlagenen Aktiva-Wort! (9 Punkte für bis zu 21 Zeichen, ansonsten Zeichen geteilt durch 3 aufgerundet. Grammatikfehler geben 1 Punkt).</p>
+                    <div class="dm-task">
+                        <div id="dmWordDisplay" class="word-display dm-word">-</div>
 
-                    <div style="text-align: center; margin-top: 15px;">
-                        <div id="dmWordDisplay" class="word-display" style="color: grey;">-</div>
+                        <div id="dmGrammarTopic" class="dm-topic" style="display: none;">
+                            <div class="dm-topic-head">
+                                <span class="dm-topic-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5"/></svg></span>
+                                <strong id="dmGrammarTheme"></strong>
+                                <span id="dmGrammarLevel" class="dm-topic-level"></span>
+                            </div>
+                            <p id="dmGrammarExample" class="dm-topic-example"></p>
+                            <div id="dmGrammarSwitch" class="dm-topic-switch" role="group" aria-label="Grammatikthema wechseln" style="display: none;">
+                                <button type="button" id="dmGrammarEasier" onclick="switchGrammarTopic(-1)" title="Leichteres Thema"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg><span>Leichter</span></button>
+                                <button type="button" id="dmGrammarOther" onclick="switchGrammarTopic(0)" title="Anderes Thema auf diesem Niveau"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 3h5v5"/><path d="M4 20L21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg><span>Anderes</span></button>
+                                <button type="button" id="dmGrammarHarder" onclick="switchGrammarTopic(1)" title="Schwereres Thema"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 15l-6-6-6 6"/></svg><span>Schwerer</span></button>
+                            </div>
+                        </div>
                     </div>
 
                     <div style="margin: 1.5rem 0;">
-                        <label for="dmUserSentence" style="font-size: 0.9rem; font-weight: 500; margin-bottom: 6px;">Dein Beispielsatz:</label>
-                        <textarea id="dmUserSentence" rows="3" placeholder="Schreibe deinen Satz auf Deutsch..." style="width: 100%; resize: vertical; padding: 12px; font-size: 1rem;"></textarea>
-                        <button type="button" class="btn btn-success" onclick="checkDeutschMeisterSentence()" id="dmCheckBtn" style="width: 100%; margin-top: 10px; padding: 12px;">Satz überprüfen 🚀</button>
+                        <textarea id="dmUserSentence" aria-label="Dein Beispielsatz" rows="3" placeholder="Schreibe deinen Satz auf Deutsch..." style="width: 100%; resize: vertical; padding: 12px; font-size: 1rem;"></textarea>
+                        <button type="button" class="btn btn-success" onclick="checkDeutschMeisterSentence()" id="dmCheckBtn" style="width: 100%; margin-top: 10px; padding: 12px;">Satz überprüfen</button>
                     </div>
 
                     <div id="dmResultContainer" style="display: none; background: var(--md-surface); border: 1px solid var(--md-border); padding: 16px; border-radius: 8px; margin-bottom: 1.5rem;">
@@ -2788,37 +2965,32 @@ try {
                         <div id="dmFeedbackText" style="font-size: 0.95rem; margin-bottom: 15px; white-space: pre-wrap; line-height: 1.5;"></div>
 
                         <div id="dmHiddenDetails" style="border-top: 1px solid var(--md-border); padding-top: 12px; display: none;">
-                            <h3 style="color: var(--md-accent-text); margin-top: 0; font-size: 1rem;">📚 Auflösung & Übersetzung</h3>
+                            <h3 style="color: var(--md-accent-text); margin-top: 0; font-size: 1rem;">Auflösung & Übersetzung</h3>
                             <p><strong>Wort:</strong> <span id="dmResWord"></span></p>
                             <p><strong>Artikel:</strong> <span id="dmResArt"></span></p>
+                            <p id="dmResPluralRow"><strong>Plural:</strong> <span id="dmResPlural"></span></p>
                             <p><strong>Übersetzung:</strong> <span id="dmResTrans" style="color: var(--md-accent-text); font-weight: 600;"></span></p>
                             <p><strong>Beispiel:</strong> <em id="dmResEx"></em></p>
-                            <button type="button" class="btn" onclick="fetchNextDeutschMeisterWord()" style="width: 100%; margin-top: 10px;">Nächste Aufgabe ➡️</button>
+                            <button type="button" class="btn" onclick="fetchNextDeutschMeisterWord()" style="width: 100%; margin-top: 10px;">Nächste Aufgabe</button>
                         </div>
                     </div>
 
-                    <div style="text-align: center; border-top: 1px solid var(--md-border); padding-top: 1rem; margin-top: 1.5rem;">
+                    <div style="display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 1.5rem; border-top: 1px solid var(--md-border); padding-top: 1rem;">
                         <button type="button" onclick="showGameSetup()" class="btn btn-secondary setup-change-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Trainingseinstellungen ändern</button>
+                        <div class="rate-group action-group is-inline" role="group" aria-label="Wort-Aktionen"><button type="button" class="rate-btn a-edit" onclick="openEditFromDm()" title="Bearbeiten"><span class="rate-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg></span><span>Bear&shy;beiten</span></button><button type="button" class="rate-btn a-delete" onclick="deleteWordFromDm()" title="Löschen"><span class="rate-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M10 11v5M14 11v5"/></svg></span><span>Löschen</span></button></div>
                     </div>
                 </div>
             </div>
 
             <div id="derDieDasPlayCard" style="display: none;">
                 <div class="card">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 8px;">
-                        <h2 style="margin: 0;" id="dddGameTitle"><span class="h-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="0.8"/></svg></span>Der-Die-Das Training</h2>
-                        <div style="display: flex; gap: 6px; align-items: center;">
-                            <div class="rate-group action-group is-inline" role="group" aria-label="Wort-Aktionen"><button type="button" class="rate-btn a-edit" onclick="openEditFromDdd()" title="Bearbeiten"><span class="rate-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg></span><span>Bear&shy;beiten</span></button><button type="button" class="rate-btn a-delete" onclick="deleteWordFromDdd()" title="Löschen"><span class="rate-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M10 11v5M14 11v5"/></svg></span><span>Löschen</span></button></div>
-                            <div id="dddStreakCounter" style="background: var(--md-surface-card); border: 1px solid var(--md-border); padding: 6px 14px; border-radius: 8px; font-weight: 600; color: var(--md-accent-text); font-size: 0.95rem;">
-                                🌱 Streak: <span id="dddStreakValue">0</span> / 10
-                            </div>
-                        </div>
-                    </div>
-                    <p style="text-align: center; color: var(--md-text-muted); font-size: 0.9rem; margin-bottom: 1.5rem;" id="dddSubtitle">Rate den richtigen Artikel für dieses Aktiva-Wort! (10 in Folge = Super Booster 🚀)</p>
+                    <p style="text-align: center; color: var(--md-text-muted); font-size: 0.9rem; margin-bottom: 1.5rem; display: none;" id="dddSubtitle"></p>
 
-                    <div style="text-align: center; margin-top: 15px;">
-                        <div id="dddWordDisplay" class="word-display" style="color: grey;">-</div>
-                        <div id="dddTranslationDisplay" style="font-size: 1.05rem; color: var(--md-accent-text); margin-top: 6px; margin-bottom: 15px; font-weight: 500; display: none;"></div>
+                    <div class="ddd-card-track">
+                        <div id="dddWordCard" class="ddd-word-card">
+                            <div id="dddWordDisplay" class="word-display" style="color: grey;">-</div>
+                            <div id="dddTranslationDisplay" style="font-size: 1.05rem; color: var(--md-accent-text); margin-top: 6px; font-weight: 500; min-height: 1.4em;"></div>
+                        </div>
                     </div>
 
                     <div style="display: flex; gap: 12px; justify-content: center; margin: 2rem 0;">
@@ -2827,24 +2999,13 @@ try {
                         <button type="button" class="btn" onclick="submitDerDieDasAnswer('das')" style="background-color: var(--md-das); flex: 1; padding: 16px; font-size: 1.1rem;">das</button>
                     </div>
 
-                    <div id="dddFeedbackContainer" style="display: none; background: var(--md-surface); border: 1px solid var(--md-border); padding: 16px; border-radius: 8px; margin-bottom: 1.5rem; text-align: center;">
+                    <div id="dddFeedbackContainer" class="ddd-faded" style="background: var(--md-surface); border: 1px solid var(--md-border); padding: 16px; border-radius: 8px; margin-bottom: 1.5rem; text-align: center;">
                         <div id="dddFeedbackText" style="font-size: 1.1rem; font-weight: 600; margin-bottom: 12px;"></div>
-
-                        <div id="dddExtraActionSection" style="display: none; margin-top: 12px; border-top: 1px solid var(--md-border); padding-top: 12px;">
-                            <button type="button" class="btn btn-secondary" onclick="loadNextDerDieDasWord()" style="width: 100%; margin-bottom: 8px;">Nächstes Wort laden ➡️</button>
-                            <button type="button" class="btn btn-info" onclick="toggleDddSentenceWriter()" id="dddToggleSentenceBtn" style="width: 100%; margin-bottom: 8px;">✍️ Satz schreiben (Bonus Punkte)</button>
-
-                            <div id="dddSentenceWriterBox" style="display: none; margin-top: 8px; text-align: left;">
-                                <label for="dddUserSentence" style="font-size: 0.9rem; font-weight: 500; margin-bottom: 6px;">Schreibe einen Satz mit diesem Wort:</label>
-                                <textarea id="dddUserSentence" rows="2" placeholder="Dein Satz hier..." style="width: 100%; margin-bottom: 8px; resize: vertical;"></textarea>
-                                <button type="button" class="btn btn-success" onclick="checkDddSentence()" style="width: 100%;">Satz prüfen & Booster holen 🚀</button>
-                            </div>
-                            <div id="dddSentenceCorrection" style="display: none; margin-top: 8px; font-size: 0.95rem; text-align: left; white-space: pre-wrap;"></div>
-                        </div>
                     </div>
 
-                    <div style="text-align: center; border-top: 1px solid var(--md-border); padding-top: 1rem; margin-top: 1.5rem;">
+                    <div style="display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 1.5rem; border-top: 1px solid var(--md-border); padding-top: 1rem;">
                         <button type="button" onclick="showGameSetup()" class="btn btn-secondary setup-change-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Trainingseinstellungen ändern</button>
+                        <div class="rate-group action-group is-inline" role="group" aria-label="Wort-Aktionen"><button type="button" class="rate-btn a-edit" onclick="openEditFromDdd()" title="Bearbeiten"><span class="rate-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg></span><span>Bear&shy;beiten</span></button><button type="button" class="rate-btn a-delete" onclick="deleteWordFromDdd()" title="Löschen"><span class="rate-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M10 11v5M14 11v5"/></svg></span><span>Löschen</span></button></div>
                     </div>
                 </div>
             </div>
@@ -2939,9 +3100,11 @@ let activeGameSettings = null;
 let currentGameWord = null;
 let currentDerDieDasWord = null;
 let currentDeutschMeisterWord = null;
+let currentGrammarTopic = null;
+let grammarTopicList = null;   // all open topics from grammar_levels, loaded once per page
 // Training card to go back to after editing a word from a training (null = normal dashboard edit)
 let editReturnTraining = null;
-let lastDddWasRight = false;
+let dddAnswerLocked = false;
 let dddStreakCount = 0;
 let statusPieChartInstance = null;
 let aktivaLineChartInstance = null;
@@ -2983,7 +3146,7 @@ function setPlanLock(el, feature) {
     else if (el.title === PLAN_UPGRADE_HINT[feature]) el.removeAttribute('title');
 }
 function applyPlanLocks() {
-    const lockedIds = { llm: ['aiFillBtn', 'toggleSentenceWriterBtn', 'dddToggleSentenceBtn'], image: ['editImageBtn', 'generateImageBtn'] };
+    const lockedIds = { llm: ['aiFillBtn', 'toggleSentenceWriterBtn'], image: ['editImageBtn', 'generateImageBtn'] };
     Object.keys(lockedIds).forEach(feature => {
         lockedIds[feature].forEach(id => setPlanLock(document.getElementById(id), feature));
     });
@@ -3120,7 +3283,7 @@ async function generateAiImageForCurrentWord() {
             const imgTag = document.getElementById('generatedImageTag');
             imgTag.src = data.image_data;
             imgTag.style.display = 'block';
-            btn.textContent = '🔄 Bild neu generieren';
+            btn.textContent = 'Bild neu generieren';
             showAlert('Visuelle Szene erfolgreich von Google AI generiert und gespeichert!');
         } else {
             alert(data.error || 'Fehler bei der Bildgenerierung.');
@@ -3155,7 +3318,7 @@ async function checkAndLoadImageForCurrentWord() {
 
         imgTag.onload = () => {
             imgTag.style.display = 'block';
-            btn.textContent = '🔄 Bild neu generieren';
+            btn.textContent = 'Bild neu generieren';
         };
 
         imgTag.onerror = () => {
@@ -3348,7 +3511,7 @@ async function fillWordWithAI() {
 
             showAlert('Wort erfolgreich mit KI ausgefüllt!');
         } else {
-            alert('Konnte die KI-Antwort nicht verarbeiten.');
+            alert(data.error || 'Konnte die KI-Antwort nicht verarbeiten.');
         }
     } catch (err) {
         console.error('KI-Ausfüllen fehlgeschlagen', err);
@@ -3450,7 +3613,7 @@ function renderLevelPath(aktivaCount) {
 
     const caption = next >= 0
         ? `<strong>${fmt(n)}</strong> aktive Wörter · noch ${fmt(LEVELS[next].min - n)} bis ${LEVELS[next].name}`
-        : `<strong>${fmt(n)}</strong> aktive Wörter · höchstes Niveau erreicht 🏆`;
+        : `<strong>${fmt(n)}</strong> aktive Wörter · höchstes Niveau erreicht`;
 
     box.setAttribute('aria-label', `Sprachniveau: ${reached >= 0 ? LEVELS[reached].name : 'Einsteiger'}, ${n} aktive Wörter`);
     box.innerHTML = `
@@ -3489,7 +3652,7 @@ function showLevelCard(i, n) {
     wrap.className = 'level-card-overlay' + (isNew ? ' is-new' : '');
     wrap.innerHTML = `
         <div class="level-card" role="dialog" aria-modal="true" aria-labelledby="levelCardTitle">
-            <div class="level-card-kicker">${isNew ? '🎉 Neues Niveau erreicht!' : `Niveau ${i + 1} von ${LEVELS.length}`}</div>
+            <div class="level-card-kicker">${isNew ? 'Neues Niveau erreicht!' : `Niveau ${i + 1} von ${LEVELS.length}`}</div>
             <div class="level-card-img"><img src="levels/level-${i + 1}.jpg" alt=""></div>
             <h2 id="levelCardTitle">${l.name}</h2>
             <p>${isNew
@@ -3633,7 +3796,6 @@ function onStatsThemaChange() {
 function updateDailyTrackerUI() {
     const titleEl = document.getElementById('trackerTitle');
     const subtitleEl = document.getElementById('trackerSubtitle');
-    const iconEl = document.getElementById('trackerIcon');
     const fillEl = document.getElementById('trackerProgressFill');
 
     const percentage = Math.min(Math.round((todayReviewedCount / dailyTarget) * 100), 100);
@@ -3642,22 +3804,16 @@ function updateDailyTrackerUI() {
     titleEl.textContent = `Tagesziel: ${todayReviewedCount} / ${dailyTarget} Wörter wiederholt`;
 
     if (todayReviewedCount === 0) {
-        iconEl.textContent = '😴';
         subtitleEl.textContent = 'Guten Morgen! Zeit, die grauen Zellen zu aktivieren.';
     } else if (todayReviewedCount < 25) {
-        iconEl.textContent = '☕';
         subtitleEl.textContent = 'Guter Start! Bleib am Ball.';
     } else if (todayReviewedCount < 50) {
-        iconEl.textContent = '🔥';
         subtitleEl.textContent = 'Du kommst in Fahrt! Halbzeit der ersten Etappe.';
     } else if (todayReviewedCount < 75) {
-        iconEl.textContent = '🚀';
         subtitleEl.textContent = 'Unglaubliches Tempo! Das Ziel ist in Sicht.';
     } else if (todayReviewedCount < 100) {
-        iconEl.textContent = '⚡';
         subtitleEl.textContent = 'Fast geschafft! Nur noch ein letzter Schub.';
     } else {
-        iconEl.textContent = '🏆';
         subtitleEl.textContent = 'Ziel erreicht! Absoluter Vokabel-Meister heute!';
     }
 }
@@ -4023,6 +4179,13 @@ function initGameInstantly() {
 }
 
 const GAME_CARD_IDS = ['gameSetupCard', 'gamePlayCard', 'derDieDasPlayCard', 'deutschMeisterPlayCard'];
+// Page title per card: the game's name while playing, "Vokabeltraining" on the setup screen
+const GAME_CARD_TITLES = { gameSetupCard: 'Vokabeltraining', gamePlayCard: 'Karteikarten', derDieDasPlayCard: 'Der-Die-Das', deutschMeisterPlayCard: 'Grammatik-Challenge' };
+
+function setGameViewTitle(cardId) {
+    const title = GAME_CARD_TITLES[cardId];
+    if (title) document.getElementById('gameViewTitle').textContent = title;
+}
 
 // Shows exactly one card of the training view ('trainingLoader' shows the loading animation)
 function showGameCard(cardId) {
@@ -4030,6 +4193,7 @@ function showGameCard(cardId) {
         document.getElementById(id).style.display = (id === cardId) ? 'block' : 'none';
     });
     document.getElementById('trainingLoader').classList.toggle('active', cardId === 'trainingLoader');
+    setGameViewTitle(cardId);
 }
 
 function gameCardForMode(mode) {
@@ -4119,6 +4283,7 @@ async function startGameSession(e) {
 
     const settings = { mode: (mode === 'der_die_das' || mode === 'deutsch_meister') ? mode : 'standard', ...filterSettings };
     activeGameSettings = settings;
+    setGameViewTitle(gameCardForMode(settings.mode));
     // Show the loading animation instead of the previous word until the first word is there
     showGameCard('trainingLoader');
     window.scrollTo({ top: 0 });
@@ -4143,7 +4308,7 @@ async function fetchNextDeutschMeisterWord() {
         document.getElementById('dmHiddenDetails').style.display = 'none';
         document.getElementById('dmUserSentence').value = '';
         document.getElementById('dmCheckBtn').disabled = false;
-        document.getElementById('dmCheckBtn').textContent = 'Satz überprüfen 🚀';
+        document.getElementById('dmCheckBtn').textContent = 'Satz überprüfen';
 
         const wordDisplay = document.getElementById('dmWordDisplay');
         wordDisplay.textContent = 'Lade...';
@@ -4169,10 +4334,73 @@ async function fetchNextDeutschMeisterWord() {
 
         currentDeutschMeisterWord = data.word;
         wordDisplay.textContent = currentDeutschMeisterWord.Wort;
-        wordDisplay.style.color = 'grey';
+        wordDisplay.style.color = '';
+        showGrammarTopic(data.grammar || null);
+        loadGrammarTopics();
     } catch (err) {
         console.error('Fehler beim Laden des Deutsch Meister Wortes', err);
     }
+}
+
+function showGrammarTopic(topic) {
+    currentGrammarTopic = topic;
+    const topicBox = document.getElementById('dmGrammarTopic');
+    if (!topic) {
+        topicBox.style.display = 'none';
+        return;
+    }
+    document.getElementById('dmGrammarTheme').textContent = topic.grammatik_thema;
+    document.getElementById('dmGrammarExample').textContent = topic.beispielsatz ? `„${topic.beispielsatz}“` : '';
+    document.getElementById('dmGrammarLevel').textContent = topic.niveau || '';
+    topicBox.style.display = '';
+    updateGrammarSwitch();
+}
+
+// Loads all topics once, for the "leichter / anderes Thema / schwerer" buttons
+async function loadGrammarTopics() {
+    if (grammarTopicList) return;
+    try {
+        const res = await fetch('index.php?api=grammar_topics&_ts=' + Date.now(), { cache: 'no-store' });
+        const data = await res.json();
+        if (!data.success || !data.topics || !data.topics.length) return;
+        grammarTopicList = data.topics.filter(t => !t.locked);
+    } catch (err) {
+        console.error('Grammatikthemen konnten nicht geladen werden', err);
+        return;
+    }
+    updateGrammarSwitch();
+}
+
+// The open levels (thresholds) and the index of the current topic's level among them
+function grammarLevels() {
+    const levels = [...new Set((grammarTopicList || []).map(t => Number(t.anzahl_aktiva_woerter)))].sort((a, b) => a - b);
+    const current = currentGrammarTopic ? levels.indexOf(Number(currentGrammarTopic.anzahl_aktiva_woerter)) : -1;
+    return [levels, current];
+}
+
+function updateGrammarSwitch() {
+    const box = document.getElementById('dmGrammarSwitch');
+    const [levels, current] = grammarLevels();
+    if (!grammarTopicList || current < 0) {
+        box.style.display = 'none';
+        return;
+    }
+    const sameLevel = grammarTopicList.filter(t => Number(t.anzahl_aktiva_woerter) === levels[current]);
+    document.getElementById('dmGrammarEasier').disabled = current === 0;
+    document.getElementById('dmGrammarOther').disabled = sameLevel.length < 2;
+    document.getElementById('dmGrammarHarder').disabled = current === levels.length - 1;
+    box.style.display = '';
+}
+
+// Swaps the topic of the current task (same word): one level easier (-1), another one of the same level (0)
+// or one level harder (+1), never above the user's level. The next task is random again.
+function switchGrammarTopic(step) {
+    const [levels, current] = grammarLevels();
+    const target = levels[current + step];
+    if (target === undefined) return;
+    const pool = grammarTopicList.filter(t => Number(t.anzahl_aktiva_woerter) === target && Number(t.id) !== Number(currentGrammarTopic.id));
+    if (!pool.length) return;
+    showGrammarTopic(pool[Math.floor(Math.random() * pool.length)]);
 }
 
 async function checkDeutschMeisterSentence() {
@@ -4193,7 +4421,8 @@ async function checkDeutschMeisterSentence() {
             cache: 'no-store',
             body: JSON.stringify({
                 sentence: sentence,
-                word: currentDeutschMeisterWord.Wort
+                word: currentDeutschMeisterWord.Wort,
+                grammar_id: currentGrammarTopic ? currentGrammarTopic.id : 0
             })
         });
         const data = await res.json();
@@ -4208,19 +4437,36 @@ async function checkDeutschMeisterSentence() {
             const feedbackText = document.getElementById('dmFeedbackText');
             const hiddenDetails = document.getElementById('dmHiddenDetails');
 
-            if (data.evaluation_result === 'ok') {
-                badge.innerHTML = `<span style="color: var(--md-aktiva-green);">🎉 Perfekt! +${data.points} ${data.points === 1 ? 'Punkt' : 'Punkte'}</span>`;
-            } else if (data.evaluation_result === 'wrong_context') {
-                badge.innerHTML = `<span style="color: var(--md-danger);">❌ Falscher Kontext! ${data.points} Punkt</span>`;
-            } else {
-                badge.innerHTML = `<span style="color: var(--md-warning-yellow);">⚠️ Grammatikfehler! ${data.points > 0 ? '+' : ''}${data.points} Punkt</span>`;
-            }
-
+            const word = escapeHtml(currentDeutschMeisterWord.Wort);
+            const theme = currentGrammarTopic ? escapeHtml(currentGrammarTopic.grammatik_thema) : '';
+            const verdicts = {
+                perfect:         ['#43a047', theme ? `Bravo! Perfekter Satz mit „${word}“ und dem Thema „${theme}“.` : `Bravo! Perfekter Satz mit „${word}“.`],
+                no_grammar:      ['var(--md-warning-yellow)', `Gut, bravo! Aber der Satz verwendet nicht das Thema „${theme}“.`],
+                no_word:         ['var(--md-warning-yellow)', `Gut, bravo! Aber das Wort „${word}“ fehlt im Satz.`],
+                wrong_with_word: ['#fb8c00', `Schade! Du hast „${word}“ verwendet, aber der Satz enthält Fehler.`],
+                wrong:           ['var(--md-danger)', `Leider nicht: Der Satz enthält Fehler und „${word}“ fehlt.`],
+                blocked:         ['var(--md-danger)', 'Dieser Satz ist nicht erlaubt.'],
+                not_german:      ['var(--md-danger)', 'Bitte schreibe den Satz auf Deutsch.']
+            };
+            const [color, text] = verdicts[data.evaluation_result] || verdicts.wrong;
+            badge.innerHTML = `<span style="color: ${color};">${text}</span>`;
             feedbackText.innerHTML = parseMarkdown(data.feedback);
+
+            // Not counted: the user writes a new sentence for the same word
+            if (data.evaluation_result === 'blocked' || data.evaluation_result === 'not_german') {
+                hiddenDetails.style.display = 'none';
+                document.getElementById('dmResultContainer').style.display = 'block';
+                btn.disabled = false;
+                btn.textContent = 'Satz überprüfen';
+                return;
+            }
 
             const wDet = data.word_details || {};
             document.getElementById('dmResWord').textContent = wDet.Wort || '';
             document.getElementById('dmResArt').textContent = wDet.Artikel || 'Keiner';
+            const isVerb = parseInt(wDet.VerbFlag, 10) === 1;
+            document.getElementById('dmResPluralRow').style.display = isVerb ? 'none' : '';
+            document.getElementById('dmResPlural').textContent = wDet.Plural || '-';
             document.getElementById('dmResTrans').textContent = wDet.Übersetzung || '-';
             document.getElementById('dmResEx').textContent = wDet.Beispiel || '-';
 
@@ -4232,73 +4478,38 @@ async function checkDeutschMeisterSentence() {
         } else {
             alert(data.error || 'Fehler bei der Auswertung.');
             btn.disabled = false;
-            btn.textContent = 'Satz überprüfen 🚀';
+            btn.textContent = 'Satz überprüfen';
         }
     } catch (err) {
         console.error('Fehler beim Prüfen des Deutsch Meister Satzes', err);
         alert('Netzwerkfehler.');
         btn.disabled = false;
-        btn.textContent = 'Satz überprüfen 🚀';
+        btn.textContent = 'Satz überprüfen';
     }
 }
 
 function updateDddStreakUI() {
-    const valEl = document.getElementById('dddStreakValue');
-    const counterEl = document.getElementById('dddStreakCounter');
-    const titleEl = document.getElementById('dddGameTitle');
     const subtitleEl = document.getElementById('dddSubtitle');
 
-    if (valEl) {
-        valEl.textContent = dddStreakCount;
-    }
-
-    if (counterEl && titleEl && subtitleEl) {
+    if (subtitleEl) {
         if (dddStreakCount >= 10) {
-            counterEl.style.background = 'linear-gradient(135deg, #ab47bc, #ec407a)';
-            counterEl.style.color = '#fff';
-            titleEl.innerHTML = '<span class="h-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8l4.5 4 4.5-7 4.5 7L21 8l-2 11H5z"/></svg></span>DER-DIE-DAS-GODMODE';
-            subtitleEl.innerHTML = '🔥 Absoluter Champion! Du zerschmetterst die Artikel!';
+            subtitleEl.innerHTML = 'Absoluter Champion! Du zerschmetterst die Artikel!';
         } else if (dddStreakCount >= 7) {
-            counterEl.style.background = '#e65100';
-            counterEl.style.color = '#ffcc80';
-            titleEl.innerHTML = '⚡ Blitzschneller Artikel-Ninja!';
-            subtitleEl.innerHTML = '⚡ Unaufhaltsam! Noch 3 bis zum Olymp!';
+            subtitleEl.innerHTML = 'Unaufhaltsam! Noch 3 bis zum Olymp!';
         } else if (dddStreakCount >= 5) {
-            counterEl.style.background = '#f57f17';
-            counterEl.style.color = '#fff9c4';
-            titleEl.innerHTML = '🔥 Der-Die-Das On Fire!';
-            subtitleEl.innerHTML = '🚀 Perfekter Lauf! Weiter so!';
+            subtitleEl.innerHTML = 'Perfekter Lauf! Weiter so!';
         } else if (dddStreakCount >= 3) {
-            counterEl.style.background = '#00695c';
-            counterEl.style.color = '#b2dfdb';
-            titleEl.innerHTML = '<span class="h-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="0.8"/></svg></span>Artikel-Detektiv im Einsatz';
-            subtitleEl.innerHTML = '💡 Guter Start! Die Serie baut sich auf.';
+            subtitleEl.innerHTML = 'Guter Start! Die Serie baut sich auf.';
         } else {
-            counterEl.style.background = 'var(--md-surface-card)';
-            counterEl.style.color = 'var(--md-accent-text)';
-            titleEl.innerHTML = '<span class="h-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="0.8"/></svg></span>Der-Die-Das Training';
-            subtitleEl.innerHTML = 'Rate den richtigen Artikel für dieses Aktiva-Wort! (10 in Folge = Super Booster 🚀)';
+            subtitleEl.innerHTML = '';
         }
+        subtitleEl.style.display = subtitleEl.innerHTML ? '' : 'none';
     }
 }
 
-async function fetchNextDerDieDasWord() {
+// Asks the server for the next word; null when there is none (or on error)
+async function requestDerDieDasWord() {
     try {
-        document.getElementById('dddFeedbackContainer').style.display = 'none';
-        document.getElementById('dddExtraActionSection').style.display = 'none';
-        document.getElementById('dddSentenceWriterBox').style.display = 'none';
-        document.getElementById('dddSentenceCorrection').style.display = 'none';
-        document.getElementById('dddUserSentence').value = '';
-        document.getElementById('dddToggleSentenceBtn').textContent = '✍️ Satz schreiben (Bonus Punkte)';
-
-        const wordDisplay = document.getElementById('dddWordDisplay');
-        const transDisplay = document.getElementById('dddTranslationDisplay');
-        wordDisplay.textContent = 'Lade...';
-        wordDisplay.className = 'word-display';
-        wordDisplay.style.color = 'grey';
-        transDisplay.textContent = '';
-        transDisplay.style.display = 'none';
-
         const res = await fetch('index.php?api=der_die_das_next&_ts=' + Date.now(), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -4309,19 +4520,84 @@ async function fetchNextDerDieDasWord() {
 
         if (data.error === 'Unauthorized') {
             window.location.href = 'login';
-            return;
+            return null;
         }
-
-        if (!data.success || !data.word) {
-            wordDisplay.textContent = 'Keine Wörter gefunden!';
-            return;
-        }
-
-        currentDerDieDasWord = data.word;
-        wordDisplay.textContent = currentDerDieDasWord.Wort;
-        wordDisplay.style.color = 'grey';
+        return (data.success && data.word) ? data.word : null;
     } catch (err) {
         console.error('Fehler beim Laden des Der-Die-Das Wordes', err);
+        return null;
+    }
+}
+
+function showDerDieDasWord(word) {
+    const wordDisplay = document.getElementById('dddWordDisplay');
+    const transDisplay = document.getElementById('dddTranslationDisplay');
+    document.getElementById('dddFeedbackContainer').classList.add('ddd-faded');
+    wordDisplay.className = 'word-display';
+    wordDisplay.style.color = 'grey';
+    transDisplay.textContent = '';
+    if (!word) {
+        wordDisplay.textContent = 'Keine Wörter gefunden!';
+        return;
+    }
+    currentDerDieDasWord = word;
+    wordDisplay.textContent = word.Wort;
+    dddAnswerLocked = false;
+}
+
+async function fetchNextDerDieDasWord() {
+    const wordDisplay = document.getElementById('dddWordDisplay');
+    document.getElementById('dddFeedbackContainer').classList.add('ddd-faded');
+    wordDisplay.textContent = 'Lade...';
+    wordDisplay.style.color = 'grey';
+    document.getElementById('dddTranslationDisplay').textContent = '';
+    showDerDieDasWord(await requestDerDieDasWord());
+}
+
+// After an answer: load the next word in the background while the result shows,
+// then slide the word card out to the right and the new one in from the left.
+async function advanceDerDieDas(settingsAtAnswer, pauseMs) {
+    const stillPlaying = () => activeGameSettings === settingsAtAnswer && settingsAtAnswer && settingsAtAnswer.mode === 'der_die_das';
+    const [word] = await Promise.all([requestDerDieDasWord(), new Promise(r => setTimeout(r, pauseMs))]);
+    if (!stillPlaying()) return;
+    const card = document.getElementById('dddWordCard');
+    card.classList.remove('ddd-slide-in');
+    card.classList.add('ddd-slide-out');
+    document.getElementById('dddFeedbackContainer').classList.add('ddd-faded');
+    await new Promise(r => setTimeout(r, 300));
+    if (!stillPlaying()) return;
+    showDerDieDasWord(word);
+    card.classList.remove('ddd-slide-out');
+    card.classList.add('ddd-slide-in-start');
+    void card.offsetWidth; // apply the start position on the left before sliding in
+    card.classList.replace('ddd-slide-in-start', 'ddd-slide-in');
+}
+
+function openEditFromDm() {
+    if (!currentDeutschMeisterWord) return;
+    openEditFromTraining(currentDeutschMeisterWord, 'deutschMeisterPlayCard');
+}
+
+async function deleteWordFromDm() {
+    if (!currentDeutschMeisterWord) return;
+    if (!confirm(`Wort '${currentDeutschMeisterWord.Wort}' wirklich löschen?`)) return;
+
+    const res = await fetch('index.php?api=delete&_ts=' + Date.now(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({ Wort: currentDeutschMeisterWord.Wort })
+    });
+    const result = await res.json();
+    if (result.error === 'Unauthorized') {
+        window.location.href = 'login';
+        return;
+    }
+    if (result.success) {
+        showAlert(result.message);
+        await refreshMetadata();
+        fetchNextDeutschMeisterWord();
+        loadDashboardData(true);
     }
 }
 
@@ -4354,7 +4630,8 @@ async function deleteWordFromDdd() {
 }
 
 async function submitDerDieDasAnswer(guessedArtikel) {
-    if (!currentDerDieDasWord) return;
+    if (!currentDerDieDasWord || dddAnswerLocked) return;
+    dddAnswerLocked = true;
 
     try {
         const res = await fetch('index.php?api=der_die_das_answer&_ts=' + Date.now(), {
@@ -4375,7 +4652,6 @@ async function submitDerDieDasAnswer(guessedArtikel) {
         }
 
         if (data.success) {
-            lastDddWasRight = data.is_correct;
             dddStreakCount = data.new_streak;
             updateDddStreakUI();
 
@@ -4390,103 +4666,34 @@ async function submitDerDieDasAnswer(guessedArtikel) {
 
             if (currentDerDieDasWord.Übersetzung) {
                 transDisplay.textContent = `Übersetzung: ${currentDerDieDasWord.Übersetzung}`;
-                transDisplay.style.display = 'block';
             }
 
             const feedbackText = document.getElementById('dddFeedbackText');
+            const feedbackBox = document.getElementById('dddFeedbackContainer');
+            feedbackBox.style.background = data.is_correct ? 'rgba(67, 160, 71, 0.15)' : 'rgba(229, 57, 53, 0.15)';
+            feedbackBox.style.borderColor = data.is_correct ? '#43a047' : 'var(--md-danger)';
             if (data.is_correct) {
                 if (data.super_booster) {
-                    feedbackText.innerHTML = `<span style="color: #ab47bc; font-size: 1.2rem;">🚀 GODMODE SUPER BOOSTER! 10er Streak geknackt! (+9 Score & Revisionsdatum aktualisiert)</span>`;
+                    feedbackText.innerHTML = `<span style="color: #ab47bc; font-size: 1.2rem;">GODMODE SUPER BOOSTER! 10er Streak geknackt!</span>`;
                 } else {
-                    feedbackText.innerHTML = `<span style="color: var(--md-aktiva-green);">Sehr gut! (+${data.points} Score, Status: ${escapeHtml(data.new_status)})</span>`;
+                    feedbackText.innerHTML = `<span style="color: #43a047;">Sehr gut! Streak: ${dddStreakCount} / 10</span>`;
                 }
             } else {
-                feedbackText.innerHTML = `<span style="color: var(--md-danger);">Schade! Streak auf 0 zurückgesetzt. Richtiger Artikel: <strong>${escapeHtml(correctArt)}</strong> (${data.points} Punkt)</span>`;
+                feedbackText.innerHTML = `<span style="color: var(--md-danger);">Schade! Streak auf 0 zurückgesetzt. Richtiger Artikel: <strong>${escapeHtml(correctArt)}</strong></span>`;
             }
 
-            document.getElementById('dddFeedbackContainer').style.display = 'block';
-            document.getElementById('dddExtraActionSection').style.display = 'block';
+            feedbackBox.classList.remove('ddd-faded');
+            // Show the result briefly, then the next word (a bit longer when wrong, to read the right article)
+            advanceDerDieDas(activeGameSettings, data.is_correct ? 1200 : 2500);
 
             todayReviewedCount++;
             updateDailyTrackerUI();
+        } else {
+            dddAnswerLocked = false;
         }
     } catch (err) {
         console.error('Fehler beim Übermitteln der Der-Die-Das Antwort', err);
-    }
-}
-
-function loadNextDerDieDasWord() {
-    fetchNextDerDieDasWord();
-}
-
-function toggleDddSentenceWriter() {
-    if (planLocked('llm')) return;
-    const box = document.getElementById('dddSentenceWriterBox');
-    const btn = document.getElementById('dddToggleSentenceBtn');
-    if (box.style.display === 'none') {
-        box.style.display = 'block';
-        btn.textContent = '✕ Satz schreiben schließen';
-    } else {
-        box.style.display = 'none';
-        btn.textContent = '✍️ Satz schreiben (Bonus Punkte)';
-    }
-}
-
-async function checkDddSentence() {
-    const sentence = document.getElementById('dddUserSentence').value.trim();
-    if (!sentence || !currentDerDieDasWord) {
-        alert('Bitte gib zuerst einen Satz ein!');
-        return;
-    }
-
-    const correctionEl = document.getElementById('dddSentenceCorrection');
-    correctionEl.textContent = 'Prüfe Satz...';
-    correctionEl.style.display = 'block';
-
-    try {
-        const res = await fetch('index.php?api=der_die_das_check_sentence&_ts=' + Date.now(), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            cache: 'no-store',
-            body: JSON.stringify({
-                sentence: sentence,
-                word: currentDerDieDasWord.Wort,
-                previous_was_right: lastDddWasRight ? 1 : 0
-            })
-        });
-        const data = await res.json();
-
-        if (data.error === 'Unauthorized') {
-            window.location.href = 'login';
-            return;
-        }
-
-        if (data.success) {
-            if (data.is_perfect) {
-                let msg = '';
-                if (data.points_added === 9) {
-                    msg = '<br><br>🎉 Absolut fehlerfrei und idiomatisch! Super-Booster angewendet (+9 Punkte / 3x sehr gut)!';
-                } else if (data.points_added === 3) {
-                    msg = '<br><br>🎉 Absolut fehlerfrei und idiomatisch! +3 Punkte Booster gutgeschrieben!';
-                } else if (data.is_idiomatic) {
-                    msg = `<br><br>✅ Richtig! +${data.points_added} Punkt (Wort ist noch nicht aktiva).`;
-                } else {
-                    msg = `<br><br>✅ Grammatikalisch korrekt! (Zwar nicht perfekt idiomatisch, daher +${data.points_added} Punkt vergeben).`;
-                }
-                correctionEl.innerHTML = `<span style="color: var(--md-text-success);">${parseMarkdown(data.correction)}</span>` + `<div style="color: var(--md-accent-text); font-weight: bold;">${msg}</div>`;
-                todayReviewedCount++;
-                updateDailyTrackerUI();
-            } else {
-                correctionEl.innerHTML = `<span style="color: #e53935; font-weight: bold;">⚠️ Der Satz enthält Grammatikfehler (${data.points_added > 0 ? '+' + data.points_added + ' Punkt gutgeschrieben' : 'keine Punkte'}).</span><br><br><span style="color: var(--md-on-surface);">${parseMarkdown(data.correction)}</span>`;
-                todayReviewedCount++;
-                updateDailyTrackerUI();
-            }
-        } else {
-            correctionEl.textContent = data.error || 'Fehler bei der Prüfung.';
-        }
-    } catch (err) {
-        console.error('Fehler beim Prüfen des Satzes', err);
-        correctionEl.textContent = 'Netzwerkfehler.';
+        dddAnswerLocked = false;
     }
 }
 
@@ -4771,17 +4978,17 @@ async function checkStandardSentenceBooster() {
             if (data.is_perfect) {
                 let msg = '';
                 if (data.points_added === 9) {
-                    msg = '<br><br>🎉 Absolut fehlerfrei und idiomatisch! Super-Booster angewendet (+9 Punkte Bonus / 3x sehr gut)!';
+                    msg = '<br><br>Absolut fehlerfrei und idiomatisch! Super-Booster angewendet!';
                 } else if (data.points_added === 3) {
-                    msg = '<br><br>🎉 Absolut fehlerfrei und idiomatisch! +3 Punkte Booster gutgeschrieben!';
+                    msg = '<br><br>Absolut fehlerfrei und idiomatisch! Booster gutgeschrieben!';
                 } else {
-                    msg = `<br><br>✅ Grammatikalisch korrekt! (Zwar nicht perfekt idiomatisch, daher +${data.points_added} Punkt vergeben).`;
+                    msg = `<br><br>Grammatikalisch korrekt! (Zwar nicht perfekt idiomatisch).`;
                 }
                 correctionTextEl.innerHTML = `<span style="color: var(--md-text-success);">${parseMarkdown(data.correction)}</span>` + `<div style="color: var(--md-accent-text); font-weight: bold; margin-top: 8px;">${msg}</div>`;
                 todayReviewedCount++;
                 updateDailyTrackerUI();
             } else {
-                correctionTextEl.innerHTML = `<span style="color: #e53935; font-weight: bold;">⚠️ Der Satz enthält Grammatikfehler (+1 Punkt gutgeschrieben).</span><br><br><span style="color: var(--md-on-surface);">${parseMarkdown(data.correction)}</span>`;
+                correctionTextEl.innerHTML = `<span style="color: #e53935; font-weight: bold;">Der Satz enthält Grammatikfehler.</span><br><br><span style="color: var(--md-on-surface);">${parseMarkdown(data.correction)}</span>`;
                 todayReviewedCount++;
                 updateDailyTrackerUI();
             }
@@ -4918,6 +5125,10 @@ function applyEditToTrainingWord(formData) {
         Object.assign(currentDerDieDasWord, changes);
         const wordDisplay = document.getElementById('dddWordDisplay');
         if (wordDisplay.textContent !== 'Lade...') wordDisplay.textContent = currentDerDieDasWord.Wort;
+    } else if (editReturnTraining === 'deutschMeisterPlayCard' && currentDeutschMeisterWord) {
+        Object.assign(currentDeutschMeisterWord, changes);
+        const wordDisplay = document.getElementById('dmWordDisplay');
+        if (wordDisplay.textContent !== 'Lade...') wordDisplay.textContent = currentDeutschMeisterWord.Wort;
     }
 }
 
@@ -5231,7 +5442,9 @@ function openAddForm() {
     editReturnTraining = null;
     resetForm();
     document.getElementById('formContainer').classList.add('active');
+    document.getElementById('dashboard-view').classList.add('form-open');
     document.getElementById('formToggleBar').style.display = 'none';
+    window.scrollTo({ top: 0 });
     document.getElementById('Wort').focus();
 }
 
@@ -5319,6 +5532,7 @@ function resetForm() {
     document.getElementById('formTitle').textContent = 'Neues Wort hinzufügen';
     document.getElementById('formSubmitBtn').textContent = 'Wort speichern';
     document.getElementById('formContainer').classList.remove('active');
+    document.getElementById('dashboard-view').classList.remove('form-open');
     document.getElementById('formToggleBar').style.display = '';
 }
 
@@ -5351,8 +5565,9 @@ function editWord(row) {
     document.getElementById('formTitle').textContent = 'Wort bearbeiten';
     document.getElementById('formSubmitBtn').textContent = 'Wort aktualisieren';
     document.getElementById('formContainer').classList.add('active');
+    document.getElementById('dashboard-view').classList.add('form-open');
     document.getElementById('formToggleBar').style.display = 'none';
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    window.scrollTo({ top: 0 });
 }
 
 // Sends the word form to the server; returns the server's answer, or null after a login redirect

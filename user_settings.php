@@ -4,7 +4,7 @@
 
 const PLAN_OPTIONS = [
     'free'    => ['Gratis', 'Wörter lernen, alle Spiele ohne KI, Statistik'],
-    'ai'      => ['KI', 'Alles aus Gratis, plus KI-Ausfüllen, Satzprüfung und Deutsch Meister'],
+    'ai'      => ['KI', 'Alles aus Gratis, plus KI-Ausfüllen, Satzprüfung und Grammatik-Challenge'],
     'ai_full' => ['KI Plus', 'Alles aus KI, plus Bildgenerierung zu Ihren Wörtern'],
 ];
 
