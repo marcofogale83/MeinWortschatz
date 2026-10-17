@@ -62,7 +62,7 @@ function planAllows(string $plan, string $feature): bool {
 define('GEMINI_API_KEY', $config['gemini_api_key'] ?? '');
 define('INFOMANIAK_TOKEN', $config['infomaniak']['token'] ?? '');
 define('INFOMANIAK_PRODUCT_ID', (string)($config['infomaniak']['product_id'] ?? ''));
-define('INFOMANIAK_MODEL', $config['infomaniak']['model'] ?? 'Qwen/Qwen3.5-122B-A10B-FP8');
+define('INFOMANIAK_MODEL', $config['infomaniak']['model'] ?? 'mistralai/Mistral-Small-4-119B-2603');
 
 if (isset($pdo) && method_exists($pdo, 'setAttribute')) {
     $pdo->setAttribute(PDO::ATTR_EMULATE_PREPARES, false);
