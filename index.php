@@ -333,6 +333,29 @@ function pickGrammarTopic(PDO $pdo, int $uid): ?array {
     }
 }
 
+// True when the sentence clearly contains the word, also inflected ("Igel" in "Igeln", "laufen" in "läuft").
+// Only used to confirm the word: forms it misses (irregular verbs) are still judged by the AI.
+function sentenceContainsWord(string $sentence, string $word): bool {
+    $fold = fn($s) => strtr(mb_strtolower($s, 'UTF-8'), ['ä' => 'a', 'ö' => 'o', 'ü' => 'u', 'ß' => 'ss']);
+    $tokens = fn($s) => preg_split('/[^\p{L}]+/u', $fold($s), -1, PREG_SPLIT_NO_EMPTY);
+    $parts = array_diff($tokens($word), ['der', 'die', 'das', 'den', 'dem', 'des', 'ein', 'eine', 'sich', 'zu']);
+    if (!$parts) {
+        return false;
+    }
+    usort($parts, fn($a, $b) => mb_strlen($b) <=> mb_strlen($a));
+    $key = $parts[0];
+    $stem = preg_replace('/(en|n|e)$/', '', $key);
+    foreach ($tokens($sentence) as $t) {
+        if ($t === $key || (str_starts_with($t, $key) && mb_strlen($t) - mb_strlen($key) <= 3)) {
+            return true;
+        }
+        if (mb_strlen($stem) >= 4 && str_starts_with($t, $stem) && mb_strlen($t) - mb_strlen($stem) <= 4) {
+            return true;
+        }
+    }
+    return false;
+}
+
 function grammarTopicById(PDO $pdo, int $id): ?array {
     if ($id <= 0) {
         return null;
@@ -983,6 +1006,9 @@ if (isset($_GET['api'])) {
             exit;
         }
 
+        // Checked here so a word that is plainly in the sentence is never reported as missing
+        $wordFound = sentenceContainsWord($sentence, $word);
+
         $grammarPart = $topic
             ? "Das verlangte Grammatikthema ist: '{$topic['grammatik_thema']}' (Beispiel: '{$topic['beispielsatz']}').\n"
             : '';
@@ -991,7 +1017,8 @@ if (isset($_GET['api'])) {
                     "Satz des Nutzers: <<<$sentence>>>\n\n" .
                     "Bewerte:\n" .
                     "1. \"satz_korrekt\": true, wenn der Satz grammatikalisch und inhaltlich korrekt ist, sonst false.\n" .
-                    "2. \"wort_verwendet\": true, wenn das Wort '$word' (auch gebeugt oder konjugiert) sinnvoll im Satz vorkommt, sonst false.\n" .
+                    "2. \"wort_verwendet\": true, wenn das Wort '$word' (auch gebeugt oder konjugiert) sinnvoll im Satz vorkommt, sonst false." .
+                    ($wordFound ? " Das Wort kommt im Satz vor, also ist wort_verwendet true und das Feedback darf nicht behaupten, es fehle." : "") . "\n" .
                     "3. \"grammatik_beleg\": zitiere die Wörter im Satz, die das Grammatikthema zeigen (z.B. bei 'Personalpronomen im Nominativ' das Pronomen 'ich' als Subjekt), oder leer, wenn keine vorkommen.\n" .
                     "4. \"grammatik_verwendet\": true, wenn grammatik_beleg nicht leer ist und das Thema dort richtig angewendet wird" . ($topic ? "" : " (ohne Grammatikthema immer true)") . ", sonst false. " .
                     "Es genügt, wenn das Thema mindestens einmal richtig vorkommt; andere Formen und Satzteile im selben Satz sind erlaubt und kein Grund für false.\n" .
@@ -1013,7 +1040,7 @@ if (isset($_GET['api'])) {
 
         $isTrue = fn($v) => $v === true || in_array(strtolower(trim((string)$v)), ['true', 'ja', '1'], true);
         $correct = $parsedData ? $isTrue($parsedData['satz_korrekt'] ?? false) : false;
-        $usesWord = $parsedData ? $isTrue($parsedData['wort_verwendet'] ?? false) : false;
+        $usesWord = $wordFound || ($parsedData && $isTrue($parsedData['wort_verwendet'] ?? false));
         $usesGrammar = !$topic || ($parsedData && $isTrue($parsedData['grammatik_verwendet'] ?? false));
         $feedback = $parsedData ? (string)($parsedData['feedback'] ?? '') : $ai['content'];
 
@@ -1570,7 +1597,6 @@ try {
         .dm-topic-ico { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--md-control-hover); color: var(--md-accent-text); flex-shrink: 0; }
         .dm-topic-ico svg { width: 17px; height: 17px; }
         .dm-topic-head strong { color: var(--md-accent-text); font-size: 1.05rem; line-height: 1.3; }
-        .dm-topic-level { padding: 2px 9px; border-radius: 999px; border: 1px solid var(--md-border); font-size: 0.72rem; font-weight: 700; color: var(--md-text-muted); }
         .dm-topic-example { margin: 6px 0 0; font-size: 0.9rem; color: var(--md-text-muted); font-style: italic; }
         .dm-topic-example:empty { display: none; }
         .dm-topic-switch { display: inline-flex; margin-top: 14px; border: 1px solid var(--md-border); border-radius: 999px; overflow: hidden; }
@@ -2000,7 +2026,6 @@ try {
         }
 
         /* Training settings in the vokabiq style */
-        #gameSetupCard .setup-title { display: flex; align-items: center; font-size: 1.3rem; font-weight: 700; margin-bottom: 1.2rem; }
         #gameSetupCard .setup-label { font-size: 0.8rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--md-text-muted); margin-bottom: 8px; }
         .mode-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 1.2rem; }
         .mode-tile {
@@ -2770,7 +2795,7 @@ try {
                     <button type="button" class="back-icon" onclick="switchView('dashboard')" title="Zurück zum Dashboard" aria-label="Zurück zum Dashboard">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
                     </button>
-                    <h1><span class="h-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg></span><span id="gameViewTitle">Vokabeltraining</span></h1>
+                    <h1><span id="gameViewIcon" class="h-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span><span id="gameViewTitle">Trainingseinstellungen</span></h1>
                 </div>
             </header>
 
@@ -2780,7 +2805,6 @@ try {
             </div>
 
             <div id="gameSetupCard" class="card">
-                <h2 class="setup-title"><span class="h-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>Trainingseinstellungen</h2>
                 <form id="gameSetupForm" onsubmit="startGameSession(event)">
                     <div class="setup-label">Trainingsmodus</div>
                     <div class="mode-tiles" role="radiogroup" aria-label="Trainingsmodus">
@@ -2944,7 +2968,6 @@ try {
                             <div class="dm-topic-head">
                                 <span class="dm-topic-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5"/></svg></span>
                                 <strong id="dmGrammarTheme"></strong>
-                                <span id="dmGrammarLevel" class="dm-topic-level"></span>
                             </div>
                             <p id="dmGrammarExample" class="dm-topic-example"></p>
                             <div id="dmGrammarSwitch" class="dm-topic-switch" role="group" aria-label="Grammatikthema wechseln" style="display: none;">
@@ -4179,12 +4202,19 @@ function initGameInstantly() {
 }
 
 const GAME_CARD_IDS = ['gameSetupCard', 'gamePlayCard', 'derDieDasPlayCard', 'deutschMeisterPlayCard'];
-// Page title per card: the game's name while playing, "Vokabeltraining" on the setup screen
-const GAME_CARD_TITLES = { gameSetupCard: 'Vokabeltraining', gamePlayCard: 'Karteikarten', derDieDasPlayCard: 'Der-Die-Das', deutschMeisterPlayCard: 'Grammatik-Challenge' };
+// Page title per card: the game's name while playing, "Trainingseinstellungen" on the setup screen
+const GAME_CARD_TITLES = { gameSetupCard: 'Trainingseinstellungen', gamePlayCard: 'Karteikarten', derDieDasPlayCard: 'Der-Die-Das', deutschMeisterPlayCard: 'Grammatik-Challenge' };
+
+// Header icon per card: the gear on the setup screen, the game's own icon from its mode tile while playing
+const GAME_CARD_ICON_MODES = { gamePlayCard: 'standard', derDieDasPlayCard: 'der_die_das', deutschMeisterPlayCard: 'deutsch_meister' };
+const GAME_SETUP_ICON = document.getElementById('gameViewIcon').innerHTML;
 
 function setGameViewTitle(cardId) {
     const title = GAME_CARD_TITLES[cardId];
-    if (title) document.getElementById('gameViewTitle').textContent = title;
+    if (!title) return;
+    document.getElementById('gameViewTitle').textContent = title;
+    const modeIcon = document.querySelector(`.mode-tile[data-mode="${GAME_CARD_ICON_MODES[cardId]}"] .mode-ico`);
+    document.getElementById('gameViewIcon').innerHTML = modeIcon ? modeIcon.innerHTML : GAME_SETUP_ICON;
 }
 
 // Shows exactly one card of the training view ('trainingLoader' shows the loading animation)
@@ -4351,7 +4381,6 @@ function showGrammarTopic(topic) {
     }
     document.getElementById('dmGrammarTheme').textContent = topic.grammatik_thema;
     document.getElementById('dmGrammarExample').textContent = topic.beispielsatz ? `„${topic.beispielsatz}“` : '';
-    document.getElementById('dmGrammarLevel').textContent = topic.niveau || '';
     topicBox.style.display = '';
     updateGrammarSwitch();
 }
