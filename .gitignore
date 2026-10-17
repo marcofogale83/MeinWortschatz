@@ -1,5 +1,7 @@
 .vscode
+.gitignore
 config.php
+config_2.php
 .htaccess
 README.txt
 
