@@ -2,3 +2,9 @@
 config.php
 .htaccess
 README.txt
+
+fill_starter_words.py
+fill_starter_words_deepseek.py
+starter_words_grundform.xlsx
+starter_words_filled.xlsx
+starter_words.sql

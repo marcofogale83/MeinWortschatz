@@ -60,7 +60,9 @@ function planAllows(string $plan, string $feature): bool {
 
 // --- CONFIGURATION: API keys come from config.php (never hardcode them here) ---
 define('GEMINI_API_KEY', $config['gemini_api_key'] ?? '');
-define('RAPIDAPI_KEY', $config['rapidapi_key'] ?? '');
+define('INFOMANIAK_TOKEN', $config['infomaniak']['token'] ?? '');
+define('INFOMANIAK_PRODUCT_ID', (string)($config['infomaniak']['product_id'] ?? ''));
+define('INFOMANIAK_MODEL', $config['infomaniak']['model'] ?? 'Qwen/Qwen3.5-122B-A10B-FP8');
 
 if (isset($pdo) && method_exists($pdo, 'setAttribute')) {
     $pdo->setAttribute(PDO::ATTR_EMULATE_PREPARES, false);
@@ -208,31 +210,35 @@ function jsArg($value): string {
     );
 }
 
-// One single DeepSeek call for all AI features
-function callDeepSeek(string $prompt): array {
+// One single Infomaniak AI call for all text AI features (OpenAI-compatible chat completions)
+function callAi(string $prompt): array {
+    if (INFOMANIAK_TOKEN === '' || INFOMANIAK_PRODUCT_ID === '') {
+        return ['ok' => false, 'error' => 'Infomaniak AI ist nicht konfiguriert (token / product_id in config.php fehlt).', 'content' => ''];
+    }
+
     $curl = curl_init();
     curl_setopt_array($curl, [
-        CURLOPT_URL => "https://deepseek-v31.p.rapidapi.com/",
+        CURLOPT_URL => "https://api.infomaniak.com/2/ai/" . rawurlencode(INFOMANIAK_PRODUCT_ID) . "/openai/v1/chat/completions",
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_ENCODING => "",
         CURLOPT_MAXREDIRS => 10,
-        CURLOPT_TIMEOUT => 30,
+        CURLOPT_TIMEOUT => 60,
         CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
         CURLOPT_CUSTOMREQUEST => "POST",
         CURLOPT_POSTFIELDS => json_encode([
-            'model' => 'DeepSeek-V3.2',
+            'model' => INFOMANIAK_MODEL,
             'messages' => [
                 ['role' => 'user', 'content' => $prompt]
             ]
         ]),
         CURLOPT_HTTPHEADER => [
             "Content-Type: application/json",
-            "x-rapidapi-host: deepseek-v31.p.rapidapi.com",
-            "x-rapidapi-key: " . RAPIDAPI_KEY
+            "Authorization: Bearer " . INFOMANIAK_TOKEN
         ],
     ]);
     $response = curl_exec($curl);
     $err = curl_error($curl);
+    $status = (int)curl_getinfo($curl, CURLINFO_HTTP_CODE);
     curl_close($curl);
 
     if ($err) {
@@ -240,16 +246,22 @@ function callDeepSeek(string $prompt): array {
     }
 
     $data = json_decode((string)$response, true);
+    if ($status >= 400) {
+        $msg = $data['error']['message'] ?? $data['error']['description'] ?? $data['message'] ?? (is_string($data['error'] ?? null) ? $data['error'] : '');
+        return ['ok' => false, 'error' => "KI-Fehler (HTTP $status)" . ($msg !== '' ? ": $msg" : ''), 'content' => ''];
+    }
+
     $content = '';
     if (isset($data['choices'][0]['message']['content'])) {
-        $content = $data['choices'][0]['message']['content'];
+        $content = (string)$data['choices'][0]['message']['content'];
     } elseif (isset($data['choices'][0]['text'])) {
-        $content = $data['choices'][0]['text'];
-    } elseif (isset($data['content'])) {
-        $content = $data['content'];
+        $content = (string)$data['choices'][0]['text'];
     } else {
         $content = (string)$response;
     }
+
+    // Reasoning models (e.g. Qwen) may prepend a <think>...</think> block
+    $content = preg_replace('/<think>.*?<\/think>/s', '', $content);
 
     return ['ok' => true, 'error' => '', 'content' => trim($content)];
 }
@@ -832,7 +844,7 @@ if (isset($_GET['api'])) {
                     "  \"beispiel\": \"Beispielsatz auf Deutsch und Übersetzung auf " . $translationLangNames[0] . "\"\n" .
                     "}";
 
-        $ai = callDeepSeek($userPrompt);
+        $ai = callAi($userPrompt);
         if (!$ai['ok']) {
             echo json_encode(['success' => false, 'error' => $ai['error']]);
             exit;
@@ -891,7 +903,7 @@ if (isset($_GET['api'])) {
                     "  \"feedback\": \"Deine Korrektur oder Erklärung auf Deutsch\"\n" .
                     "}";
 
-        $ai = callDeepSeek($userPrompt);
+        $ai = callAi($userPrompt);
         if (!$ai['ok']) {
             echo json_encode(['success' => false, 'error' => $ai['error']]);
             exit;
@@ -1033,7 +1045,7 @@ if (isset($_GET['api'])) {
                     "  \"feedback\": \"Deine kurze Rückmeldung oder Korrektur auf Deutsch\"\n" .
                     "}";
 
-        $ai = callDeepSeek($userPrompt);
+        $ai = callAi($userPrompt);
         if (!$ai['ok']) {
             echo json_encode(['success' => false, 'error' => $ai['error']]);
             exit;

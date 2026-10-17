@@ -59,8 +59,8 @@ $L = $LEGAL;
         <h3>2.4 KI-Funktionen (Abo KI und KI Plus)</h3>
         <p>
             Wenn Sie eine KI-Funktion auslösen (zum Beispiel «Mit KI ausfüllen», Satzprüfung oder Deutsch Meister),
-            senden wir das betreffende Wort und gegebenenfalls den von Ihnen geschriebenen Satz an einen Anbieter
-            von Sprachmodellen. Bei der Bildgenerierung (KI Plus) senden wir das Wort und eine Bildbeschreibung an
+            senden wir das betreffende Wort und gegebenenfalls den von Ihnen geschriebenen Satz an Infomaniak
+            (Sprachmodell, Schweiz). Bei der Bildgenerierung (KI Plus) senden wir das Wort und eine Bildbeschreibung an
             Google. Ihr Name, Ihre E-Mail-Adresse und Ihre Kontokennung werden dabei nicht übermittelt. Bitte
             schreiben Sie in Übungssätze keine persönlichen Angaben über sich oder andere. Die Antworten der KI
             speichern wir bei Ihrem Wort.
@@ -107,7 +107,7 @@ $L = $LEGAL;
             <tr><th>Anbieter</th><th>Zweck</th><th>Ort</th></tr>
             <tr><td>Infomaniak Network SA, Genf</td><td>Hosting von Website und Datenbank</td><td>Schweiz</td></tr>
             <tr><td>Google (Google Ireland Ltd. und Google LLC)</td><td>Anmeldung mit Google; Bildgenerierung über die Gemini-API (nur KI Plus)</td><td>EU / USA</td></tr>
-            <tr><td><span class="ph">[ANBIETER DES SPRACHMODELLS, derzeit DeepSeek-Modell über RapidAPI]</span></td><td>Textfunktionen der KI (nur Abo KI und KI Plus)</td><td><span class="ph">[LAND]</span></td></tr>
+            <tr><td>Infomaniak Network SA, Genf (AI Tools)</td><td>Textfunktionen der KI (nur Abo KI und KI Plus)</td><td>Schweiz</td></tr>
             <tr><td><span class="ph">[ZAHLUNGSANBIETER]</span></td><td>Zahlungsabwicklung</td><td><span class="ph">[LAND]</span></td></tr>
         </table>
         <p>
