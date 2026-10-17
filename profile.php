@@ -177,9 +177,11 @@ function e(string $s): string {
 }
 ?>
 <!DOCTYPE html>
-<html lang="de">
+<html lang="de" translate="no">
 <head>
     <meta charset="UTF-8">
+    <!-- The app teaches German: stop browsers (Chrome, Edge, Safari) from translating the page -->
+    <meta name="google" content="notranslate">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <?php theme_head(); ?>
     <title>Profil - vokabiq</title>
@@ -349,7 +351,7 @@ function e(string $s): string {
     </style>
 <?php settingsStyles(); ?>
 </head>
-<body>
+<body class="notranslate">
 <main class="container">
     <header>
         <div class="header-title">
